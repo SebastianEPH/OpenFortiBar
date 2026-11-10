@@ -5,7 +5,7 @@ import SwiftUI
 // MARK: - Helper root (instalado con install-helper.sh)
 
 enum Helper {
-    static let base = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/tunnelbar", isDirectory: true)
+    static let base = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/openfortibar", isDirectory: true)
     static let executable = base.appendingPathComponent("vpn-helper")
     static let logURL = base.appendingPathComponent("run/vpn.log")
     static let openfortivpn = base.appendingPathComponent("bin/openfortivpn")
@@ -13,7 +13,7 @@ enum Helper {
     static let sourceProfiles = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/openfortivpn", isDirectory: true)
 
-    static let installCommand = "sudo /Applications/TunnelBar.app/Contents/Resources/install-helper.sh"
+    static let installCommand = "sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh"
 
     static var isInstalled: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
@@ -123,7 +123,7 @@ enum VPNState {
 
 @MainActor
 enum MenuBarIcon {
-    static let logo = Bundle.main.url(forResource: "tunnelbar-logo", withExtension: "png").flatMap(NSImage.init(contentsOf:))
+    static let logo = Bundle.main.url(forResource: "openfortibar-logo", withExtension: "png").flatMap(NSImage.init(contentsOf:))
     private static var cache: [String: NSImage] = [:]
 
     static func image(for state: VPNState) -> NSImage {
@@ -217,7 +217,7 @@ final class VPNController: ObservableObject {
         }
     }
 
-    /// Cierra el túnel, incluido uno abierto fuera de la app (p. ej. `tunnelbar-cli` en Terminal).
+    /// Cierra el túnel, incluido uno abierto fuera de la app (p. ej. `openforti-cli` en Terminal).
     func disconnect() {
         lastError = nil
         stopping = true
@@ -230,6 +230,12 @@ final class VPNController: ObservableObject {
             }
             self.poll()
         }
+    }
+
+    /// Cierra la app; si hay un túnel abierto, primero lo desconecta.
+    func quit() {
+        guard state != .disconnected else { return NSApp.terminate(nil) }
+        Helper.run(["stop"]) { _ in NSApp.terminate(nil) }
     }
 
     func reopenLogin() {
@@ -271,7 +277,7 @@ final class VPNController: ObservableObject {
             address = nil
             state = Self.pgrep("-x", "openfortivpn") ? .external : .disconnected
         }
-        StatusItemTooltip.set("TunnelBar — \(state.title)")
+        StatusItemTooltip.set("OpenForti Bar — \(state.title)")
     }
 
     private static func authenticateURL(in log: String) -> URL? {
@@ -333,7 +339,7 @@ enum StatusItemTooltip {
 // MARK: - Inicio de sesión (LaunchAgent)
 
 enum LoginItem {
-    static let label = "io.github.sebastianeph.tunnelbar"
+    static let label = "io.github.sebastianeph.openfortibar"
     static let plist = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/LaunchAgents/\(label).plist")
 
@@ -386,7 +392,7 @@ struct PanelView: View {
                 .frame(width: 30, height: 30)
                 .opacity(vpn.state == .disconnected ? 0.5 : 1)
             VStack(alignment: .leading, spacing: 2) {
-                Text("TunnelBar").font(.headline)
+                Text("OpenForti Bar").font(.headline)
                 Text(vpn.state.title).font(.subheadline).foregroundStyle(vpn.state.color)
             }
             Spacer()
@@ -453,7 +459,7 @@ struct PanelView: View {
                 Button("Abrir de nuevo") { vpn.reopenLogin() }.controlSize(.small)
             }
         case .external:
-            Text("Hay una VPN abierta fuera de la app (por ejemplo, con tunnelbar-cli en Terminal). Desconéctala para usar la app.")
+            Text("Hay una VPN abierta fuera de la app (por ejemplo, con openforti-cli en Terminal). Desconéctala para usar la app.")
                 .font(.caption).foregroundStyle(.secondary)
         default:
             EmptyView()
@@ -531,14 +537,19 @@ struct PanelView: View {
             Button { NSWorkspace.shared.open(Helper.sourceProfiles) } label: {
                 Image(systemName: "folder")
             }
-            .help("Conexiones (~/.config/openfortivpn). Tras editarlas: sudo /Applications/TunnelBar.app/Contents/Resources/install-helper.sh")
+            .help("Conexiones (~/.config/openfortivpn). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
+            Button { vpn.quit() } label: {
+                Image(systemName: "power")
+            }
+            .keyboardShortcut("q")
+            .help(vpn.state == .disconnected ? "Salir (⌘Q)" : "Desconectar y salir (⌘Q)")
         }
         .controlSize(.small)
     }
 }
 
 @main
-struct TunnelBarApp: App {
+struct OpenFortiBarApp: App {
     @StateObject private var vpn = VPNController()
 
     var body: some Scene {

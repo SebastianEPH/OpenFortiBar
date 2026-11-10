@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Helper root de TunnelBar. Se instala en /Library/PrivilegedHelperTools/tunnelbar (todo root:wheel)
-# y se invoca sin contraseña con "sudo -n" gracias a /etc/sudoers.d/tunnelbar.
+# Helper root de OpenForti Bar. Se instala en /Library/PrivilegedHelperTools/openfortibar (todo root:wheel)
+# y se invoca sin contraseña con "sudo -n" gracias a /etc/sudoers.d/openfortibar.
 #
 # Uso: vpn-helper start <perfil>   conecta profiles/<perfil>.conf (login SSO en el navegador)
 #      vpn-helper stop             cierra cualquier openfortivpn en curso
@@ -12,12 +12,12 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export OPENSSL_CONF=/dev/null OPENSSL_MODULES=/var/empty OPENSSL_ENGINES=/var/empty
 umask 022
 
-BASE=/Library/PrivilegedHelperTools/tunnelbar
+BASE=/Library/PrivilegedHelperTools/openfortibar
 RUN=$BASE/run
 LOG=$RUN/vpn.log
 PIDFILE=$RUN/runner.pid
 OPENFORTIVPN=$BASE/bin/openfortivpn
-DNS_KEY=State:/Network/Service/tunnelbar/DNS
+DNS_KEY=State:/Network/Service/openfortibar/DNS
 
 runner_alive() { [[ -f $PIDFILE ]] && kill -0 $(<$PIDFILE) 2>/dev/null }
 

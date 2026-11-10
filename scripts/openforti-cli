@@ -1,8 +1,8 @@
 #!/bin/zsh
-# Conecta a la VPN desde Terminal con el helper de TunnelBar (sin contraseña).
-# Uso: tunnelbar-cli [perfil]    (Ctrl+C o cerrar la ventana desconecta)
-HELPER=/Library/PrivilegedHelperTools/tunnelbar/vpn-helper
-LOG=/Library/PrivilegedHelperTools/tunnelbar/run/vpn.log
+# Conecta a la VPN desde Terminal con el helper de OpenForti Bar (sin contraseña).
+# Uso: openforti-cli [perfil]    (Ctrl+C o cerrar la ventana desconecta)
+HELPER=/Library/PrivilegedHelperTools/openfortibar/vpn-helper
+LOG=/Library/PrivilegedHelperTools/openfortibar/run/vpn.log
 
 sudo -n $HELPER start ${1:-default} || exit 1
 trap 'sudo -n $HELPER stop; exit 0' INT TERM HUP

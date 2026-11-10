@@ -31,14 +31,14 @@ jobs:
         run: |
           mkdir -p dist
           V=${{ steps.ver.outputs.version }}
-          ditto -c -k --keepParent build/TunnelBar.app dist/TunnelBar-$V.zip
-          mkdir -p build/dmg && cp -R build/TunnelBar.app build/dmg/ && ln -s /Applications build/dmg/Applications
-          hdiutil create -volname TunnelBar -srcfolder build/dmg -format UDZO dist/TunnelBar-$V.dmg
+          ditto -c -k --keepParent build/OpenFortiBar.app dist/OpenFortiBar-$V.zip
+          mkdir -p build/dmg && cp -R build/OpenFortiBar.app build/dmg/ && ln -s /Applications build/dmg/Applications
+          hdiutil create -volname "OpenForti Bar" -srcfolder build/dmg -format UDZO dist/OpenFortiBar-$V.dmg
           (cd dist && shasum -a 256 * > SHA256SUMS.txt)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TunnelBar-${{ steps.ver.outputs.version }}
+          name: OpenFortiBar-${{ steps.ver.outputs.version }}
           path: dist/*
 
       - name: Publicar release

@@ -1,9 +1,9 @@
-// Genera Resources/tunnelbar-logo.png (1024x1024): escudo con candado.
-// Uso: swift scripts/make-icon.swift Resources/tunnelbar-logo.png
+// Genera Resources/openfortibar-logo.png (1024x1024): escudo con candado.
+// Uso: swift scripts/make-icon.swift Resources/openfortibar-logo.png
 import AppKit
 
 let size: CGFloat = 1024
-let out = CommandLine.arguments.dropFirst().first ?? "Resources/tunnelbar-logo.png"
+let out = CommandLine.arguments.dropFirst().first ?? "Resources/openfortibar-logo.png"
 let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size), pixelsHigh: Int(size),
                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

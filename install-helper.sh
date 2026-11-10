@@ -1,11 +1,11 @@
 #!/bin/zsh
-# Instala el helper root de TunnelBar para conectar/desconectar sin contraseña.
+# Instala el helper root de OpenForti Bar para conectar/desconectar sin contraseña.
 # Ejecutar como root una vez, y de nuevo al actualizar openfortivpn o cambiar perfiles:
 #   sudo ./install-helper.sh <usuario>
 #
-# Copia a /Library/PrivilegedHelperTools/tunnelbar (root:wheel):
+# Copia a /Library/PrivilegedHelperTools/openfortibar (root:wheel):
 #   vpn-helper, bin/openfortivpn + lib/ (OpenSSL), profiles/ (desde ~/.config/openfortivpn)
-# y crea /etc/sudoers.d/tunnelbar permitiendo solo "vpn-helper start <perfil>" y "vpn-helper stop".
+# y crea /etc/sudoers.d/openfortibar permitiendo solo "vpn-helper start <perfil>" y "vpn-helper stop".
 set -e
 [[ $EUID == 0 ]] || { print -u2 "Ejecuta con sudo."; exit 1 }
 USER_NAME=${1:-$SUDO_USER}
@@ -13,7 +13,7 @@ USER_NAME=${1:-$SUDO_USER}
 USER_HOME=$(dscl . -read /Users/$USER_NAME NFSHomeDirectory | awk '{ print $2 }')
 
 SRC=${0:A:h}
-BASE=/Library/PrivilegedHelperTools/tunnelbar
+BASE=/Library/PrivilegedHelperTools/openfortibar
 PROFILES_SRC=$USER_HOME/.config/openfortivpn
 
 install -d -o root -g wheel -m 755 $BASE $BASE/bin $BASE/lib $BASE/profiles $BASE/run
@@ -47,11 +47,11 @@ done
 # Regla sudo: solo conectar y desconectar
 SUDOERS=$(mktemp)
 cat > $SUDOERS <<EOF
-# TunnelBar: conectar/desconectar sin contraseña (solo el helper protegido)
+# OpenForti Bar: conectar/desconectar sin contraseña (solo el helper protegido)
 $USER_NAME ALL=(root) NOPASSWD: $BASE/vpn-helper start *, $BASE/vpn-helper stop
 EOF
 visudo -cf $SUDOERS >/dev/null
-install -o root -g wheel -m 440 $SUDOERS /etc/sudoers.d/tunnelbar
+install -o root -g wheel -m 440 $SUDOERS /etc/sudoers.d/openfortibar
 rm -f $SUDOERS
 
 print "Helper instalado en $BASE"
