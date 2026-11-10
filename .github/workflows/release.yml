@@ -1,0 +1,49 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compilar
+        run: ./build.sh ${{ steps.ver.outputs.version }}
+
+      - name: Empaquetar (zip + dmg)
+        run: |
+          mkdir -p dist
+          V=${{ steps.ver.outputs.version }}
+          ditto -c -k --keepParent build/TunnelBar.app dist/TunnelBar-$V.zip
+          mkdir -p build/dmg && cp -R build/TunnelBar.app build/dmg/ && ln -s /Applications build/dmg/Applications
+          hdiutil create -volname TunnelBar -srcfolder build/dmg -format UDZO dist/TunnelBar-$V.dmg
+          (cd dist && shasum -a 256 * > SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TunnelBar-${{ steps.ver.outputs.version }}
+          path: dist/*
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

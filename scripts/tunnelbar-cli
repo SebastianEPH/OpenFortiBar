@@ -1,0 +1,18 @@
+#!/bin/zsh
+# Conecta a la VPN desde Terminal con el helper de TunnelBar (sin contraseña).
+# Uso: tunnelbar-cli [perfil]    (Ctrl+C o cerrar la ventana desconecta)
+HELPER=/Library/PrivilegedHelperTools/tunnelbar/vpn-helper
+LOG=/Library/PrivilegedHelperTools/tunnelbar/run/vpn.log
+
+sudo -n $HELPER start ${1:-default} || exit 1
+trap 'sudo -n $HELPER stop; exit 0' INT TERM HUP
+
+opened=0
+tail -n +1 -F $LOG 2>/dev/null | while IFS= read -r line; do
+  print -r -- $line
+  if (( !opened )) && [[ $line == *"Authenticate at '"* ]]; then
+    opened=1
+    open "${${line#*\'}%\'*}"
+  fi
+  [[ $line == "INFO:   Desconectado." ]] && break
+done
