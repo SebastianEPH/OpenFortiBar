@@ -1,5 +1,22 @@
 # Cambios
 
+## [1.4.1] - 2026-11-10
+
+### Corregido
+- **El panel se desordenaba al ocultar los logs.** Al desactivar «Mostrar logs en el panel», al abrir o cerrar la configuración o al expandir o contraer los logs, la ventana mantenía su alto anterior, así que el contenido quedaba cortado o con un espacio vacío. Ahora el panel recalcula su alto cada vez que cambia el contenido, manteniendo el borde superior pegado a la barra de menús.
+
+### Agregado
+- Nada.
+
+### Cambiado
+- El panel ajusta su alto a lo que muestra en cada momento: es más bajo sin logs y más alto en la configuración.
+
+### Quitado
+- Nada.
+
+### Notas
+- Actualiza desde el botón **Actualizar** del panel. No hace falta reinstalar el helper.
+
 ## [1.4.0] - 2026-11-10
 
 ### Agregado

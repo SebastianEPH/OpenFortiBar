@@ -509,6 +509,40 @@ final class Updater: ObservableObject {
     }
 }
 
+// MARK: - Ventana del panel
+
+/// MenuBarExtra calcula el tamaño de su ventana al abrirse y no lo recalcula cuando el
+/// contenido cambia de alto (ocultar logs, abrir configuración…). Aquí se reajusta a mano,
+/// manteniendo fijo el borde superior, que es el que cuelga de la barra de menús.
+@MainActor
+enum PanelWindow {
+    static weak var window: NSWindow?
+
+    static func fit() {
+        DispatchQueue.main.async {
+            guard let window, let content = window.contentView else { return }
+            let height = content.fittingSize.height
+            guard height > 0, abs(window.frame.height - height) > 0.5 else { return }
+            var frame = window.frame
+            frame.origin.y += frame.height - height
+            frame.size.height = height
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
+}
+
+/// Guarda la ventana real que contiene el panel.
+struct WindowReader: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { PanelWindow.window = view.window; PanelWindow.fit() }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {
+        if let window = view.window { PanelWindow.window = window }
+    }
+}
+
 // MARK: - Configuración (⚙︎)
 
 /// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
@@ -702,6 +736,11 @@ struct PanelView: View {
         }
         .padding(14)
         .frame(width: 380)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geo in
+            Color.clear.onChange(of: geo.size.height, initial: true) { PanelWindow.fit() }
+        })
+        .background(WindowReader())
         .onAppear { vpn.reloadProfiles() }
     }
 
