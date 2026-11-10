@@ -52,6 +52,8 @@ Requiere Xcode Command Line Tools y macOS 14 o superior.
 
 ## Releases
 
+Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md). La app se actualiza sola desde el panel con el botón **Actualizar**.
+
 Cada push a `main` compila la app en GitHub Actions. Al subir un tag `vX.Y.Z` se publica un Release con el `.dmg`, el `.zip` y los checksums:
 
 ```sh

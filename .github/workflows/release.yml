@@ -41,9 +41,17 @@ jobs:
           name: OpenFortiBar-${{ steps.ver.outputs.version }}
           path: dist/*
 
+      - name: Notas del release (desde CHANGELOG.md)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V=${{ steps.ver.outputs.version }}
+          awk -v v="$V" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > build/notes.md
+          test -s build/notes.md || { echo "Falta la sección [$V] en CHANGELOG.md"; exit 1; }
+          printf '\n---\n**Instalación:** descarga el `.dmg`, arrastra la app a Aplicaciones y la primera vez ábrela con clic derecho → Abrir.\n' >> build/notes.md
+
       - name: Publicar release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: build/notes.md

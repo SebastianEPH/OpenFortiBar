@@ -233,9 +233,12 @@ final class VPNController: ObservableObject {
     }
 
     /// Cierra la app; si hay un túnel abierto, primero lo desconecta.
-    func quit() {
-        guard state != .disconnected else { return NSApp.terminate(nil) }
-        Helper.run(["stop"]) { _ in NSApp.terminate(nil) }
+    func quit() { stopTunnel { NSApp.terminate(nil) } }
+
+    /// Desconecta el túnel si hay uno abierto y luego ejecuta `then`.
+    func stopTunnel(then: @escaping @MainActor () -> Void) {
+        guard state != .disconnected else { return then() }
+        Helper.run(["stop"]) { _ in then() }
     }
 
     func reopenLogin() {
@@ -336,6 +339,90 @@ enum StatusItemTooltip {
     }
 }
 
+// MARK: - Actualizaciones (último release de GitHub)
+
+@MainActor
+final class Updater: ObservableObject {
+    static let repo = "SebastianEPH/OpenFortiBar"
+    enum Status: Equatable { case idle, checking, upToDate, available(String), downloading, failed(String) }
+
+    @Published var status: Status = .idle
+    private var assetURL: URL?
+
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    private struct Release: Decodable {
+        struct Asset: Decodable { let name: String; let browser_download_url: URL }
+        let tag_name: String
+        let assets: [Asset]
+    }
+
+    /// Compara versiones "1.2.0" numéricamente; las de desarrollo cuentan como antiguas.
+    static func isNewer(_ remote: String, than local: String) -> Bool {
+        let parse = { (v: String) in v.split(separator: "-").first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? [] }
+        let (r, l) = (parse(remote), parse(local))
+        for i in 0..<max(r.count, l.count) {
+            let (a, b) = (i < r.count ? r[i] : 0, i < l.count ? l[i] : 0)
+            if a != b { return a > b }
+        }
+        return local.contains("-")
+    }
+
+    func check() {
+        status = .checking
+        Task {
+            do {
+                var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
+                request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                let (data, _) = try await URLSession.shared.data(for: request)
+                let release = try JSONDecoder().decode(Release.self, from: data)
+                let version = release.tag_name.hasPrefix("v") ? String(release.tag_name.dropFirst()) : release.tag_name
+                assetURL = release.assets.first { $0.name.hasSuffix(".zip") }?.browser_download_url
+                status = Self.isNewer(version, than: Self.currentVersion) && assetURL != nil ? .available(version) : .upToDate
+            } catch {
+                status = .failed("No se pudo consultar GitHub")
+            }
+        }
+    }
+
+    /// Descarga el .zip, lo descomprime y reemplaza la app actual; luego la reabre.
+    func install(beforeQuit: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void) {
+        guard let assetURL else { return }
+        status = .downloading
+        Task {
+            do {
+                let (zip, _) = try await URLSession.shared.download(from: assetURL)
+                let dir = FileManager.default.temporaryDirectory.appendingPathComponent("openfortibar-update-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let unzip = Process()
+                unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                unzip.arguments = ["-x", "-k", zip.path, dir.path]
+                try unzip.run(); unzip.waitUntilExit()
+                let newApp = dir.appendingPathComponent("OpenFortiBar.app")
+                guard unzip.terminationStatus == 0, FileManager.default.fileExists(atPath: newApp.path) else {
+                    status = .failed("El paquete descargado no es válido"); return
+                }
+                let target = Bundle.main.bundleURL.path
+                let script = """
+                while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.3; done
+                rm -rf "\(target)" && ditto "\(newApp.path)" "\(target)"
+                xattr -dr com.apple.quarantine "\(target)" 2>/dev/null
+                open "\(target)"; rm -rf "\(dir.path)"
+                """
+                let relauncher = Process()
+                relauncher.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                relauncher.arguments = ["-c", script]
+                try relauncher.run()
+                beforeQuit { NSApp.terminate(nil) }
+            } catch {
+                status = .failed("Error al descargar: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+
 // MARK: - Inicio de sesión (LaunchAgent)
 
 enum LoginItem {
@@ -367,6 +454,7 @@ enum LoginItem {
 struct PanelView: View {
     @EnvironmentObject var vpn: VPNController
     @AppStorage("showLogs") private var showLogs = true
+    @StateObject private var updater = Updater()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -378,6 +466,7 @@ struct PanelView: View {
             Divider()
             logs
             Divider()
+            updateRow
             footer
         }
         .padding(14)
@@ -526,6 +615,29 @@ struct PanelView: View {
         } label: {
             Text("Logs").font(.headline)
         }
+    }
+
+    private var updateRow: some View {
+        HStack(spacing: 8) {
+            Text("v\(Updater.currentVersion)").font(.caption).foregroundStyle(.secondary)
+            switch updater.status {
+            case .idle: EmptyView()
+            case .checking: ProgressView().controlSize(.mini); Text("Buscando…").font(.caption)
+            case .upToDate: Text("Estás en la última versión").font(.caption).foregroundStyle(.green)
+            case .available(let v): Text("Nueva versión v\(v)").font(.caption).foregroundStyle(.orange)
+            case .downloading: ProgressView().controlSize(.mini); Text("Actualizando…").font(.caption)
+            case .failed(let m): Text(m).font(.caption).foregroundStyle(.red)
+            }
+            Spacer()
+            if case .available = updater.status {
+                Button("Actualizar") { updater.install(beforeQuit: vpn.stopTunnel) }
+            } else {
+                Button("Buscar actualizaciones") { updater.check() }
+                    .disabled(updater.status == .checking || updater.status == .downloading)
+            }
+        }
+        .controlSize(.small)
+        .onAppear { if updater.status == .idle { updater.check() } }
     }
 
     private var footer: some View {
