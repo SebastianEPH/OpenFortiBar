@@ -12,7 +12,8 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
 
 - Conectar y desconectar con un clic desde la barra de menús, con un punto de color para el estado
 - Login SAML/SSO: abre automáticamente la página de autenticación en el navegador
-- Varios perfiles de conexión (`~/.config/openfortivpn/*.conf`)
+- Carpeta personal `~/.openforti` (como `~/.ssh` o `~/.aws`) con tus perfiles, certificados e íconos, protegida con permisos 700/600
+- Backup y restauración desde ⚙︎ (perfiles, certificados, íconos y preferencias en un `.zip`)
 - DNS dividido: los dominios internos se resuelven con el DNS de la VPN (`# dns-domains:` en el perfil)
 - No pide contraseña de administrador cada vez: un helper root mínimo y protegido, con una regla `sudo` limitada
 - Configuración (⚙︎ / ⌘,): ocho íconos para elegir (Escudo, UTP, Candado, Red, Llave, Túnel, Mundo) o una imagen tuya, y un ícono distinto para cada conexión; logs, actualizaciones y más
@@ -31,7 +32,7 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
    ```sh
    xattr -dr com.apple.quarantine /Applications/OpenFortiBar.app
    ```
-3. Crea un perfil en `~/.config/openfortivpn/<nombre>.conf`:
+3. Crea un perfil en `~/.openforti/profiles/<nombre>.conf` (la app crea la carpeta al abrirse; si ya tenías perfiles en `~/.config/openfortivpn`, los copia sola):
    ```ini
    host = vpn.miempresa.com
    port = 443
@@ -42,6 +43,17 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
    ```sh
    sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh
    ```
+
+## Carpeta `~/.openforti`
+
+```
+~/.openforti/              (700)
+├── profiles/              perfiles *.conf y certificados *.pem (600)
+├── icons/                 ícono personalizado
+└── backups/               openforti-backup-AAAAMMDD-HHMMSS.zip
+```
+
+Un backup es un `.zip` con `profiles/`, `icons/` y `settings.json` (las preferencias de la app). Al restaurar uno, la app primero guarda el estado actual en `backups/antes-de-restaurar-….zip`.
 
 ## Compilar desde el código
 

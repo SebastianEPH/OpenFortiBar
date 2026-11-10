@@ -1,5 +1,42 @@
 # Cambios
 
+## [1.5.0] - 2026-11-10
+
+### Agregado
+- **Carpeta personal `~/.openforti`**, como `~/.ssh` o `~/.aws`. Ahí viven todos tus datos de OpenForti Bar:
+  | Ruta | Contenido |
+  |---|---|
+  | `~/.openforti/profiles/` | Perfiles `*.conf` y certificados `*.pem` |
+  | `~/.openforti/icons/` | Ícono personalizado (`custom-icon.png`) |
+  | `~/.openforti/backups/` | Backups `.zip` |
+  - **Permisos como `~/.ssh`**: carpetas `700` y archivos `600`, así que solo tu usuario puede leerlos. Se aplican al abrir la app y después de restaurar un backup.
+  - **Migración automática**: al abrir la app, si `~/.openforti/profiles` está vacía, se copian los perfiles y certificados de `~/.config/openfortivpn`. La ruta `ca-file` de cada perfil se actualiza a la carpeta nueva. El ícono personalizado se copia desde `~/Library/Application Support/OpenFortiBar`.
+- **Sección «Backup»** en ⚙︎ Configuración:
+  - **Crear backup**: guarda un `.zip` en `~/.openforti/backups/openforti-backup-AAAAMMDD-HHMMSS.zip`.
+  - **Guardar en…**: igual, pero eliges dónde guardarlo (por ejemplo iCloud Drive o una USB).
+  - **Restaurar…**: elige un backup y reemplaza perfiles, certificados, íconos y preferencias. **Antes de restaurar se guarda automáticamente** el estado actual en `backups/antes-de-restaurar-….zip`, por si te equivocas de archivo.
+  - Botón 📁 para abrir `~/.openforti` en Finder.
+  - Debajo se ve cuántos backups hay y cuál es el último, o el resultado de la última acción (en verde si salió bien, en rojo si hubo error).
+  - **Qué incluye un backup**: `profiles/`, `icons/` y `settings.json` con la versión de la app, la fecha y las preferencias (ícono de la app, íconos por conexión, atenuar ícono, mostrar logs, buscar actualizaciones y conexión seleccionada).
+  - Se valida que el `.zip` sea un backup de OpenForti Bar antes de tocar nada.
+
+### Cambiado
+- La app y el instalador del helper ahora leen los perfiles de **`~/.openforti/profiles`**. Si esa carpeta no existe, `install-helper.sh` sigue usando `~/.config/openfortivpn`.
+- El botón «Abrir carpeta de perfiles» y los textos de ayuda apuntan a `~/.openforti/profiles`.
+- El ícono personalizado se guarda en `~/.openforti/icons/` en lugar de `~/Library/Application Support/OpenFortiBar/`.
+
+### Quitado
+- Nada se borra: `~/.config/openfortivpn` y el ícono anterior quedan donde estaban. Puedes eliminarlos a mano cuando confirmes que todo funciona.
+
+### QA
+- Migración: los 3 archivos (`utp.conf` y 2 certificados `.pem`) se copiaron con permisos `600`, las carpetas quedaron en `700` y `ca-file` apunta a `~/.openforti/profiles`.
+- Backup → restaurar: se creó un backup, se restauró, se generó el respaldo previo automático y las preferencias quedaron idénticas a las de antes.
+- Revisión visual de la pantalla de configuración con la nueva sección.
+- Para desarrolladores: `OPENFORTIBAR_QA_BACKUP=1` repite la prueba de backup y restauración.
+
+### Notas
+- Después de editar o restaurar perfiles, ejecuta el comando del helper (⚙︎ → «Copiar comando del helper») para que la VPN use los cambios.
+
 ## [1.4.3] - 2026-11-10
 
 ### Corregido

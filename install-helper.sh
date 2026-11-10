@@ -4,7 +4,7 @@
 #   sudo ./install-helper.sh <usuario>
 #
 # Copia a /Library/PrivilegedHelperTools/openfortibar (root:wheel):
-#   vpn-helper, bin/openfortivpn + lib/ (OpenSSL), profiles/ (desde ~/.config/openfortivpn)
+#   vpn-helper, bin/openfortivpn + lib/ (OpenSSL), profiles/ (desde ~/.openforti/profiles; si no existe, ~/.config/openfortivpn)
 # y crea /etc/sudoers.d/openfortibar permitiendo solo "vpn-helper start <perfil>" y "vpn-helper stop".
 set -e
 [[ $EUID == 0 ]] || { print -u2 "Ejecuta con sudo."; exit 1 }
@@ -14,7 +14,8 @@ USER_HOME=$(dscl . -read /Users/$USER_NAME NFSHomeDirectory | awk '{ print $2 }'
 
 SRC=${0:A:h}
 BASE=/Library/PrivilegedHelperTools/openfortibar
-PROFILES_SRC=$USER_HOME/.config/openfortivpn
+PROFILES_SRC=$USER_HOME/.openforti/profiles
+[[ -d $PROFILES_SRC ]] || PROFILES_SRC=$USER_HOME/.config/openfortivpn
 
 install -d -o root -g wheel -m 755 $BASE $BASE/bin $BASE/lib $BASE/profiles $BASE/run
 HELPER_SRC=$SRC/vpn-helper.sh; [[ -f $HELPER_SRC ]] || HELPER_SRC=$SRC/Resources/vpn-helper.sh

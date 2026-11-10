@@ -11,8 +11,7 @@ enum Helper {
     static let logURL = base.appendingPathComponent("run/vpn.log")
     static let openfortivpn = base.appendingPathComponent("bin/openfortivpn")
     /// Perfiles originales; install-helper.sh los copia a la carpeta protegida.
-    static let sourceProfiles = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/openfortivpn", isDirectory: true)
+    static var sourceProfiles: URL { ConfigDir.profiles }
 
     static let installCommand = "sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh"
 
@@ -35,6 +34,139 @@ enum Helper {
         do { try process.run() } catch {
             Task { @MainActor in completion(error.localizedDescription) }
         }
+    }
+}
+
+// MARK: - Carpeta personal ~/.openforti (como ~/.ssh o ~/.aws)
+//
+// ~/.openforti/            (700)
+//   profiles/  *.conf *.pem  perfiles y certificados (600)
+//   icons/     custom-icon.png
+//   backups/   openforti-backup-AAAAMMDD-HHMMSS.zip
+
+enum ConfigDir {
+    static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".openforti", isDirectory: true)
+    static let profiles = root.appendingPathComponent("profiles", isDirectory: true)
+    static let icons = root.appendingPathComponent("icons", isDirectory: true)
+    static let backups = root.appendingPathComponent("backups", isDirectory: true)
+    static let legacyProfiles = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/openfortivpn", isDirectory: true)
+    static let legacyIcon = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("OpenFortiBar/custom-icon.png")
+
+    /// Crea la estructura y copia (sin borrar) lo que había en las rutas anteriores.
+    static func prepare() {
+        let fm = FileManager.default
+        for dir in [root, profiles, icons, backups] {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        if (try? fm.contentsOfDirectory(atPath: profiles.path))?.isEmpty ?? true,
+           let old = try? fm.contentsOfDirectory(at: legacyProfiles, includingPropertiesForKeys: nil) {
+            for file in old where ["conf", "pem"].contains(file.pathExtension) {
+                let dest = profiles.appendingPathComponent(file.lastPathComponent)
+                try? fm.copyItem(at: file, to: dest)
+                if file.pathExtension == "conf", var text = try? String(contentsOf: dest, encoding: .utf8) {
+                    // ca-file apuntaba a la carpeta anterior: ahora a ~/.openforti/profiles
+                    text = text.replacingOccurrences(of: legacyProfiles.path, with: profiles.path)
+                    text = text.replacingOccurrences(of: "~/.config/openfortivpn", with: profiles.path)
+                    try? text.write(to: dest, atomically: true, encoding: .utf8)
+                }
+            }
+        }
+        let icon = icons.appendingPathComponent("custom-icon.png")
+        if !fm.fileExists(atPath: icon.path), fm.fileExists(atPath: legacyIcon.path) {
+            try? fm.copyItem(at: legacyIcon, to: icon)
+        }
+        secure()
+    }
+
+    /// Permisos estilo ~/.ssh: carpetas 700, archivos 600.
+    static func secure() {
+        let fm = FileManager.default
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for case let url as URL in walker {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            try? fm.setAttributes([.posixPermissions: isDir ? 0o700 : 0o600], ofItemAtPath: url.path)
+        }
+    }
+}
+
+// MARK: - Backup
+
+@MainActor
+enum Backup {
+    /// Preferencias de la app que se guardan en el backup.
+    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile"]
+
+    private static func ditto(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        p.arguments = args
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+    }
+
+    static var defaultName: String {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"
+        return "openforti-backup-\(f.string(from: Date())).zip"
+    }
+
+    /// Crea un .zip con profiles/, icons/ y settings.json.
+    static func create(at destination: URL) throws {
+        let fm = FileManager.default
+        let staging = fm.temporaryDirectory.appendingPathComponent("openforti-backup-\(UUID().uuidString)/openforti", isDirectory: true)
+        defer { try? fm.removeItem(at: staging.deletingLastPathComponent()) }
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        for dir in [ConfigDir.profiles, ConfigDir.icons] where fm.fileExists(atPath: dir.path) {
+            try fm.copyItem(at: dir, to: staging.appendingPathComponent(dir.lastPathComponent))
+        }
+        var settings: [String: Any] = ["app": "OpenForti Bar", "version": Updater.currentVersion, "created": ISO8601DateFormatter().string(from: Date())]
+        var prefs: [String: Any] = [:]
+        for key in keys { if let v = UserDefaults.standard.object(forKey: key) { prefs[key] = v } }
+        settings["preferences"] = prefs
+        try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            .write(to: staging.appendingPathComponent("settings.json"))
+        try? fm.removeItem(at: destination)
+        guard ditto(["-c", "-k", "--keepParent", staging.path, destination.path]) else {
+            throw NSError(domain: "Backup", code: 1, userInfo: [NSLocalizedDescriptionKey: "No se pudo crear el .zip"])
+        }
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+    }
+
+    /// Restaura un backup: reemplaza profiles/ e icons/ y aplica las preferencias.
+    /// Antes guarda automáticamente un backup del estado actual en ~/.openforti/backups.
+    static func restore(from zip: URL) throws -> URL {
+        let fm = FileManager.default
+        let safety = ConfigDir.backups.appendingPathComponent("antes-de-restaurar-" + defaultName.replacingOccurrences(of: "openforti-backup-", with: ""))
+        try create(at: safety)
+        let tmp = fm.temporaryDirectory.appendingPathComponent("openforti-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: tmp) }
+        guard ditto(["-x", "-k", zip.path, tmp.path]) else {
+            throw NSError(domain: "Backup", code: 2, userInfo: [NSLocalizedDescriptionKey: "El archivo no es un .zip válido"])
+        }
+        let base = tmp.appendingPathComponent("openforti", isDirectory: true)
+        guard fm.fileExists(atPath: base.appendingPathComponent("settings.json").path) else {
+            throw NSError(domain: "Backup", code: 3, userInfo: [NSLocalizedDescriptionKey: "No es un backup de OpenForti Bar"])
+        }
+        for name in ["profiles", "icons"] {
+            let src = base.appendingPathComponent(name), dst = ConfigDir.root.appendingPathComponent(name)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            try? fm.removeItem(at: dst)
+            try fm.copyItem(at: src, to: dst)
+        }
+        if let data = try? Data(contentsOf: base.appendingPathComponent("settings.json")),
+           let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let prefs = json["preferences"] as? [String: Any] {
+            for (key, value) in prefs where keys.contains(key) { UserDefaults.standard.set(value, forKey: key) }
+        }
+        ConfigDir.secure()
+        MenuBarIcon.clearCache()
+        return safety
+    }
+
+    static var existing: [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: ConfigDir.backups, includingPropertiesForKeys: [.creationDateKey])) ?? [])
+            .filter { $0.pathExtension == "zip" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
     }
 }
 
@@ -161,10 +293,7 @@ enum AppIcon: String, CaseIterable, Identifiable {
 
     var isSymbol: Bool { symbol != nil }
 
-    static var customURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OpenFortiBar/custom-icon.png")
-    }
+    static var customURL: URL { ConfigDir.icons.appendingPathComponent("custom-icon.png") }
 
     var image: NSImage? {
         if let resource { return Bundle.main.url(forResource: resource, withExtension: "png").flatMap(NSImage.init(contentsOf:)) }
@@ -506,7 +635,7 @@ final class UIState: ObservableObject {
 
     init() {
         observer = NotificationCenter.default.addObserver(forName: .panelDidClose, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.showSettings = false }
+            MainActor.assumeIsolated { self?.showSettings = false; self?.backupMessage = nil }
         }
         qaObserver = NotificationCenter.default.addObserver(forName: .qaSettings, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated { self?.showSettings = note.object as? Bool ?? false }
@@ -514,6 +643,8 @@ final class UIState: ObservableObject {
     }
     private var qaObserver: Any?
     @Published var customError: String?
+    @Published var backupMessage: String?
+    @Published var backupError = false
 }
 
 struct SettingsView: View {
@@ -546,6 +677,49 @@ struct SettingsView: View {
             }
         }
         .controlSize(.small)
+    }
+
+    private var backupSummary: String {
+        let list = Backup.existing
+        guard let last = list.first else { return "Incluye perfiles, certificados, íconos y preferencias. Aún no hay backups." }
+        return "\(list.count) backup(s) en ~/.openforti/backups · último: \(last.lastPathComponent)"
+    }
+
+    private func createBackup(choose: Bool) {
+        var dest = ConfigDir.backups.appendingPathComponent(Backup.defaultName)
+        if choose {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = Backup.defaultName
+            panel.allowedContentTypes = [.zip]
+            NSApp.activate(ignoringOtherApps: true)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            dest = url
+        }
+        do {
+            try Backup.create(at: dest)
+            ui.backupError = false
+            ui.backupMessage = "Backup creado: \(dest.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))"
+        } catch {
+            ui.backupError = true
+            ui.backupMessage = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    private func restoreBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.directoryURL = ConfigDir.backups
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let safety = try Backup.restore(from: url)
+            vpn.reloadProfiles()
+            ui.backupError = false
+            ui.backupMessage = "Restaurado. Estado anterior guardado en \(safety.lastPathComponent). Ejecuta el comando del helper para aplicar los perfiles."
+        } catch {
+            ui.backupError = true
+            ui.backupMessage = "Error: \(error.localizedDescription)"
+        }
     }
 
     private func profileBinding(_ id: String) -> Binding<String> {
@@ -646,8 +820,25 @@ struct SettingsView: View {
                 }
             }
             .controlSize(.small)
-            Text("Después de editar perfiles, ejecuta el comando del helper en Terminal.")
+            Text("Tus perfiles están en ~/.openforti/profiles. Después de editarlos, ejecuta el comando del helper en Terminal.")
                 .font(.caption).foregroundStyle(.secondary)
+
+            Divider()
+            Text("Backup").font(.subheadline.bold())
+            HStack {
+                Button("Crear backup") { createBackup(choose: false) }
+                Button("Guardar en…") { createBackup(choose: true) }
+                Button("Restaurar…") { restoreBackup() }
+                Button { NSWorkspace.shared.open(ConfigDir.root) } label: { Image(systemName: "folder") }
+                    .help("Abrir ~/.openforti")
+            }
+            .controlSize(.small)
+            if let message = ui.backupMessage {
+                Text(message).font(.caption).foregroundStyle(ui.backupError ? .red : .green)
+                    .textSelection(.enabled)
+            } else {
+                Text(backupSummary).font(.caption).foregroundStyle(.secondary)
+            }
         }
         .toggleStyle(.checkbox)
     }
@@ -902,7 +1093,7 @@ struct PanelView: View {
             Button { NSWorkspace.shared.open(Helper.sourceProfiles) } label: {
                 Image(systemName: "folder")
             }
-            .help("Conexiones (~/.config/openfortivpn). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
+            .help("Conexiones (~/.openforti/profiles). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
             Button { ui.showSettings = true } label: {
                 Image(systemName: "gearshape")
                     .overlay(alignment: .topTrailing) {
@@ -939,6 +1130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        ConfigDir.prepare()
+        vpn.reloadProfiles()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.target = self
         item.button?.action = #selector(toggle)
@@ -963,6 +1156,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // QA: OPENFORTIBAR_OPEN=1 abre el panel al iniciar (para capturas automáticas).
         if ProcessInfo.processInfo.environment["OPENFORTIBAR_OPEN"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() }
+        }
+        // QA: OPENFORTIBAR_QA_BACKUP=1 crea un backup, lo restaura, imprime el resultado y sale.
+        if ProcessInfo.processInfo.environment["OPENFORTIBAR_QA_BACKUP"] == "1" {
+            let dest = ConfigDir.backups.appendingPathComponent("qa-" + Backup.defaultName)
+            do {
+                try Backup.create(at: dest)
+                print("CREADO \(dest.path)")
+                let safety = try Backup.restore(from: dest)
+                print("RESTAURADO; respaldo previo \(safety.path)")
+                try? FileManager.default.removeItem(at: dest)
+                try? FileManager.default.removeItem(at: safety)
+            } catch { print("ERROR \(error.localizedDescription)") }
+            exit(0)
         }
         // QA: OPENFORTIBAR_QA=1 recorre main → config → main → sin logs → config → main (3 s por paso).
         if ProcessInfo.processInfo.environment["OPENFORTIBAR_QA"] == "1" {
