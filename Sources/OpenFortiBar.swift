@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import SwiftUI
 
@@ -405,23 +406,9 @@ final class VPNController: ObservableObject {
 
 // MARK: - Tooltip del ícono
 
-/// MenuBarExtra no permite poner tooltip: se busca el botón del ícono en la barra y se le asigna.
-@MainActor
 enum StatusItemTooltip {
-    static func set(_ text: String) {
-        for window in NSApp.windows where window.className.contains("NSStatusBarWindow") {
-            if let button = window.contentView.flatMap(findButton), button.toolTip != text {
-                button.toolTip = text
-            }
-        }
-    }
-
-    private static func findButton(in view: NSView) -> NSStatusBarButton? {
-        if let button = view as? NSStatusBarButton { return button }
-        for subview in view.subviews {
-            if let button = findButton(in: subview) { return button }
-        }
-        return nil
+    @MainActor static func set(_ text: String) {
+        if let button = AppDelegate.shared?.statusItem?.button, button.toolTip != text { button.toolTip = text }
     }
 }
 
@@ -509,46 +496,23 @@ final class Updater: ObservableObject {
     }
 }
 
-// MARK: - Ventana del panel
-
-/// MenuBarExtra calcula el tamaño de su ventana al abrirse y no lo recalcula cuando el
-/// contenido cambia de alto (ocultar logs, abrir configuración…). Aquí se reajusta a mano,
-/// manteniendo fijo el borde superior, que es el que cuelga de la barra de menús.
-@MainActor
-enum PanelWindow {
-    static weak var window: NSWindow?
-
-    static func fit() {
-        DispatchQueue.main.async {
-            guard let window, let content = window.contentView else { return }
-            let height = content.fittingSize.height
-            guard height > 0, abs(window.frame.height - height) > 0.5 else { return }
-            var frame = window.frame
-            frame.origin.y += frame.height - height
-            frame.size.height = height
-            window.setFrame(frame, display: true, animate: false)
-        }
-    }
-}
-
-/// Guarda la ventana real que contiene el panel.
-struct WindowReader: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { PanelWindow.window = view.window; PanelWindow.fit() }
-        return view
-    }
-    func updateNSView(_ view: NSView, context: Context) {
-        if let window = view.window { PanelWindow.window = window }
-    }
-}
-
 // MARK: - Configuración (⚙︎)
 
 /// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
 @MainActor
 final class UIState: ObservableObject {
     @Published var showSettings = false
+    private var observer: Any?
+
+    init() {
+        observer = NotificationCenter.default.addObserver(forName: .panelDidClose, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showSettings = false }
+        }
+        qaObserver = NotificationCenter.default.addObserver(forName: .qaSettings, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated { self?.showSettings = note.object as? Bool ?? false }
+        }
+    }
+    private var qaObserver: Any?
     @Published var customError: String?
 }
 
@@ -764,10 +728,6 @@ struct PanelView: View {
         .padding(14)
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
-        .background(GeometryReader { geo in
-            Color.clear.onChange(of: geo.size.height, initial: true) { PanelWindow.fit() }
-        })
-        .background(WindowReader())
         .onAppear {
             vpn.reloadProfiles()
             if autoCheckUpdates && updater.status == .idle { updater.check() }
@@ -963,19 +923,99 @@ struct PanelView: View {
     }
 }
 
+// MARK: - Ícono en la barra + popover
+//
+// Se usa NSStatusItem + NSPopover en lugar de MenuBarExtra: el popover ajusta su tamaño al
+// contenido SwiftUI automáticamente (preferredContentSize), sin estirarse ni dejar huecos.
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    static weak var shared: AppDelegate?
+    let vpn = VPNController()
+    var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var observers: [Any] = []
+    private var cancellable: Any?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.target = self
+        item.button?.action = #selector(toggle)
+        statusItem = item
+
+        let host = NSHostingController(rootView: PanelView().environmentObject(vpn))
+        host.sizingOptions = .preferredContentSize
+        popover.contentViewController = host
+        popover.behavior = .transient
+        popover.animates = false
+        popover.delegate = self
+
+        refreshIcon()
+        cancellable = vpn.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.refreshIcon() }
+        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshIcon() }
+        })
+
+        // QA: OPENFORTIBAR_OPEN=1 abre el panel al iniciar (para capturas automáticas).
+        if ProcessInfo.processInfo.environment["OPENFORTIBAR_OPEN"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() }
+        }
+        // QA: OPENFORTIBAR_QA=1 recorre main → config → main → sin logs → config → main (3 s por paso).
+        if ProcessInfo.processInfo.environment["OPENFORTIBAR_QA"] == "1" {
+            let steps: [() -> Void] = [
+                { self.toggle() },
+                { NotificationCenter.default.post(name: .qaSettings, object: true) },
+                { NotificationCenter.default.post(name: .qaSettings, object: false) },
+                { UserDefaults.standard.set(false, forKey: "showLogs") },
+                { NotificationCenter.default.post(name: .qaSettings, object: true) },
+                { NotificationCenter.default.post(name: .qaSettings, object: false) },
+                { UserDefaults.standard.set(true, forKey: "showLogs") },
+            ]
+            for (i, step) in steps.enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(i) * 3, execute: step)
+            }
+        }
+    }
+
+    func refreshIcon() {
+        let defaults = UserDefaults.standard
+        let icon = AppIcon.resolve(app: defaults.string(forKey: "icon") ?? AppIcon.shield.rawValue,
+                                   profileIcons: defaults.string(forKey: "profileIcons") ?? "{}",
+                                   profile: vpn.selected?.id)
+        let dim = defaults.object(forKey: "dimWhenDisconnected") as? Bool ?? true
+        let image = MenuBarIcon.image(for: vpn.state, icon: icon, dim: dim)
+        if statusItem?.button?.image !== image { statusItem?.button?.image = image }
+    }
+
+    @objc func toggle() {
+        guard let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        NotificationCenter.default.post(name: .panelDidClose, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let panelDidClose = Notification.Name("OpenFortiBarPanelDidClose")
+    static let qaSettings = Notification.Name("OpenFortiBarQASettings")
+}
+
 @main
 struct OpenFortiBarApp: App {
-    @StateObject private var vpn = VPNController()
-    @AppStorage("icon") private var icon = AppIcon.shield.rawValue
-    @AppStorage("dimWhenDisconnected") private var dim = true
-    @AppStorage("profileIcons") private var profileIcons = "{}"
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        MenuBarExtra {
-            PanelView().environmentObject(vpn)
-        } label: {
-            Image(nsImage: MenuBarIcon.image(for: vpn.state, icon: AppIcon.resolve(app: icon, profileIcons: profileIcons, profile: vpn.selected?.id), dim: dim))
-        }
-        .menuBarExtraStyle(.window)
+        Settings { EmptyView() }
     }
 }

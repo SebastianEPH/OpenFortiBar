@@ -1,5 +1,28 @@
 # Cambios
 
+## [1.4.3] - 2026-11-10
+
+### Corregido
+- **El panel quedaba con un espacio vacío o se estiraba** al entrar y salir de ⚙︎ Configuración, o al mostrar u ocultar los logs. El arreglo de 1.4.1 no alcanzaba: la ventana de `MenuBarExtra` no se adapta bien cuando cambia el alto del contenido, y forzar su tamaño desde fuera hacía que se estirara.
+
+### Cambiado
+- **Nueva forma de mostrar el panel**: se reemplazó `MenuBarExtra` de SwiftUI por un ícono `NSStatusItem` con un `NSPopover` nativo de macOS. El popover toma el tamaño exacto de su contenido en todo momento:
+  - Pantalla principal → Configuración → volver: el panel crece y vuelve a su alto original, siempre pegado a la barra.
+  - Con o sin logs: el panel se ajusta al instante.
+- El panel ahora tiene la flecha de popover que apunta al ícono, y se cierra al hacer clic fuera.
+- Al cerrar el panel estando en Configuración, la próxima vez se abre en la pantalla principal.
+- El tooltip del ícono («OpenForti Bar — Conectado», etc.) se asigna directamente al botón de la barra, sin buscarlo entre las ventanas.
+
+### Quitado
+- El código que reajustaba a mano la ventana de `MenuBarExtra` (agregado en 1.4.1), que ya no hace falta.
+
+### QA
+- Se probó con capturas en cada paso: abrir → Configuración → volver → ocultar logs → Configuración → volver → mostrar logs. En todos los pasos el panel quedó del alto correcto, sin huecos ni estiramiento.
+- Para desarrolladores: con `OPENFORTIBAR_QA=1` la app recorre esa secuencia sola, para repetir la prueba.
+
+### Notas
+- Actualiza desde ⚙︎ → Actualizaciones. No hace falta reinstalar el helper.
+
 ## [1.4.2] - 2026-11-10
 
 ### Cambiado
