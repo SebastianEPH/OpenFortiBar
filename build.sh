@@ -17,7 +17,7 @@ lipo -create build/obj/OpenFortiBar-* -output $APP/Contents/MacOS/OpenFortiBar
 cp Info.plist $APP/Contents/
 plutil -replace CFBundleShortVersionString -string ${VERSION#v} $APP/Contents/Info.plist
 plutil -replace CFBundleVersion -string ${VERSION#v} $APP/Contents/Info.plist
-cp Resources/openfortibar-logo.png Resources/vpn-helper.sh install-helper.sh scripts/openforti-cli $APP/Contents/Resources/
+cp Resources/openfortibar-logo.png Resources/utp-logo.png Resources/vpn-helper.sh install-helper.sh scripts/openforti-cli $APP/Contents/Resources/
 
 ICONSET=build/AppIcon.iconset
 mkdir -p $ICONSET

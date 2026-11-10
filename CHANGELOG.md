@@ -1,5 +1,39 @@
 # Cambios
 
+## [1.3.0] - 2026-11-10
+
+### Agregado
+- **Botón de configuración (⚙︎)** en la parte inferior del panel, también con **⌘,**. Abre la pantalla «Configuración» dentro del mismo panel; la flecha ‹ vuelve al panel principal.
+- **Elegir el ícono** de la barra de menús y del panel. Hay 8 opciones:
+  | Opción | Tipo |
+  |---|---|
+  | Escudo | Logo de OpenForti Bar (por defecto) |
+  | UTP | Logo a color incluido como recurso (`Resources/utp-logo.png`) |
+  | Candado | Símbolo del sistema `lock.shield.fill` |
+  | Red | Símbolo del sistema `network.badge.shield.half.filled` |
+  | Llave | Símbolo del sistema `key.fill` |
+  | Túnel | Símbolo del sistema `bolt.horizontal.circle.fill` |
+  | Mundo | Símbolo del sistema `globe.americas.fill` |
+  | Personalizado | Cualquier imagen PNG/JPEG/TIFF/HEIC elegida con «Elegir imagen…» |
+  - Los símbolos del sistema toman el color de la barra de menús, así que se ven bien en modo claro y oscuro.
+  - La imagen personalizada se copia a `~/Library/Application Support/OpenFortiBar/custom-icon.png`, así que puedes borrar o mover el archivo original.
+  - El cambio se aplica al instante, sin reiniciar la app.
+- Opción **«Atenuar el ícono cuando está desconectado»** (activada por defecto).
+- Opción **«Mostrar logs en el panel»**: oculta por completo la sección de logs.
+- Opción **«Buscar actualizaciones al abrir el panel»**: si la desactivas, solo se busca con el botón manual.
+- Sección **Conexiones** en la configuración, con los botones «Abrir carpeta de perfiles» y «Copiar comando del helper» (copia el comando `sudo … install-helper.sh` al portapapeles).
+
+### Cambiado
+- «Abrir al iniciar sesión» ahora también está en la configuración; en el pie del panel sigue disponible el atajo.
+- La sección de logs recuerda si estaba expandida o contraída, sin depender de si está visible.
+
+### Quitado
+- Nada.
+
+### Notas
+- No hace falta reinstalar el helper.
+- Si vienes de la 1.2.0, usa el botón **Actualizar** del panel.
+
 ## [1.2.0] - 2026-11-10
 
 ### Agregado

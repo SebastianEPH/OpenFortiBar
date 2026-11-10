@@ -119,20 +119,91 @@ enum VPNState {
     }
 }
 
-// MARK: - Ícono de la barra (logo + punto de estado)
+// MARK: - Íconos (configurables desde ⚙︎)
+
+enum AppIcon: String, CaseIterable, Identifiable {
+    case shield, utp, lockShield, network, key, bolt, globe, custom
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .shield: "Escudo"
+        case .utp: "UTP"
+        case .lockShield: "Candado"
+        case .network: "Red"
+        case .key: "Llave"
+        case .bolt: "Túnel"
+        case .globe: "Mundo"
+        case .custom: "Personalizado"
+        }
+    }
+
+    /// PNG incluido en la app, o símbolo del sistema (SF Symbols).
+    private var resource: String? {
+        switch self {
+        case .shield: "openfortibar-logo"
+        case .utp: "utp-logo"
+        default: nil
+        }
+    }
+
+    private var symbol: String? {
+        switch self {
+        case .lockShield: "lock.shield.fill"
+        case .network: "network.badge.shield.half.filled"
+        case .key: "key.fill"
+        case .bolt: "bolt.horizontal.circle.fill"
+        case .globe: "globe.americas.fill"
+        default: nil
+        }
+    }
+
+    var isSymbol: Bool { symbol != nil }
+
+    static var customURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("OpenFortiBar/custom-icon.png")
+    }
+
+    var image: NSImage? {
+        if let resource { return Bundle.main.url(forResource: resource, withExtension: "png").flatMap(NSImage.init(contentsOf:)) }
+        if let symbol {
+            let config = NSImage.SymbolConfiguration(pointSize: 64, weight: .regular)
+            return NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(config)
+        }
+        return NSImage(contentsOf: Self.customURL)
+    }
+
+    static var current: AppIcon {
+        AppIcon(rawValue: UserDefaults.standard.string(forKey: "icon") ?? "") ?? .shield
+    }
+}
 
 @MainActor
 enum MenuBarIcon {
-    static let logo = Bundle.main.url(forResource: "openfortibar-logo", withExtension: "png").flatMap(NSImage.init(contentsOf:))
     private static var cache: [String: NSImage] = [:]
 
-    static func image(for state: VPNState) -> NSImage {
-        let key = "\(state)"
+    static func clearCache() { cache.removeAll() }
+
+    static func image(for state: VPNState, icon: AppIcon, dim: Bool) -> NSImage {
+        let key = "\(state)-\(icon.rawValue)-\(dim)"
         if let cached = cache[key] { return cached }
+        let logo = icon.image
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            logo?.draw(in: NSRect(x: 1, y: 1, width: 16, height: 16), from: .zero,
-                       operation: .sourceOver, fraction: state == .disconnected ? 0.45 : 1)
-            // El cuadrante superior derecho del logo está vacío: ahí va el punto.
+            let fraction: CGFloat = dim && state == .disconnected ? 0.45 : 1
+            let rect = NSRect(x: 1, y: 1, width: 16, height: 16)
+            if icon.isSymbol, let logo {
+                // Los símbolos se pintan con el color del texto de la barra (claro u oscuro).
+                let tinted = NSImage(size: logo.size, flipped: false) { r in
+                    logo.draw(in: r)
+                    NSColor.labelColor.set()
+                    r.fill(using: .sourceAtop)
+                    return true
+                }
+                tinted.draw(in: rect, from: .zero, operation: .sourceOver, fraction: fraction)
+            } else {
+                logo?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: fraction)
+            }
             if let dot = state.dotColor {
                 let rect = NSRect(x: 10, y: 10, width: 7, height: 7)
                 NSColor.white.setFill()
@@ -423,6 +494,116 @@ final class Updater: ObservableObject {
     }
 }
 
+// MARK: - Configuración (⚙︎)
+
+/// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
+@MainActor
+final class UIState: ObservableObject {
+    @Published var showSettings = false
+    @Published var customError: String?
+}
+
+struct SettingsView: View {
+    @EnvironmentObject var vpn: VPNController
+    @AppStorage("icon") private var icon = AppIcon.shield.rawValue
+    @AppStorage("dimWhenDisconnected") private var dim = true
+    @AppStorage("showLogs") private var showLogs = true
+    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
+    @ObservedObject var ui: UIState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button { ui.showSettings = false } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(.borderless)
+                Text("Configuración").font(.headline)
+                Spacer()
+            }
+            Divider()
+
+            Text("Ícono").font(.subheadline.bold())
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                ForEach(AppIcon.allCases) { option in
+                    Button { select(option) } label: {
+                        VStack(spacing: 4) {
+                            Group {
+                                if let image = option.image {
+                                    Image(nsImage: image).resizable().scaledToFit()
+                                        .foregroundStyle(.primary)
+                                } else {
+                                    Image(systemName: "plus.square.dashed").resizable().scaledToFit()
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 30, height: 30)
+                            Text(option.title).font(.caption2).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(6)
+                        .background(icon == option.rawValue ? Color.accentColor.opacity(0.2) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(icon == option.rawValue ? Color.accentColor : .secondary.opacity(0.3)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack {
+                Button("Elegir imagen…") { pickCustom() }
+                if let customError = ui.customError { Text(customError).font(.caption).foregroundStyle(.red) }
+            }
+            .controlSize(.small)
+            Toggle("Atenuar el ícono cuando está desconectado", isOn: $dim)
+
+            Divider()
+            Text("General").font(.subheadline.bold())
+            Toggle("Abrir al iniciar sesión", isOn: $vpn.launchAtLogin)
+            Toggle("Mostrar logs en el panel", isOn: $showLogs)
+            Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
+
+            Divider()
+            Text("Conexiones").font(.subheadline.bold())
+            HStack {
+                Button("Abrir carpeta de perfiles") { NSWorkspace.shared.open(Helper.sourceProfiles) }
+                Button("Copiar comando del helper") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(Helper.installCommand, forType: .string)
+                }
+            }
+            .controlSize(.small)
+            Text("Después de editar perfiles, ejecuta el comando del helper en Terminal.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .toggleStyle(.checkbox)
+    }
+
+    private func select(_ option: AppIcon) {
+        if option == .custom && option.image == nil { return pickCustom() }
+        icon = option.rawValue
+        MenuBarIcon.clearCache()
+    }
+
+    /// Copia la imagen elegida a Application Support para que no dependa del archivo original.
+    private func pickCustom() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic]
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url),
+              let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        else { return }
+        do {
+            try FileManager.default.createDirectory(at: AppIcon.customURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: AppIcon.customURL)
+            ui.customError = nil
+            icon = AppIcon.custom.rawValue
+            MenuBarIcon.clearCache()
+        } catch {
+            ui.customError = "No se pudo guardar la imagen"
+        }
+    }
+}
+
 // MARK: - Inicio de sesión (LaunchAgent)
 
 enum LoginItem {
@@ -454,29 +635,45 @@ enum LoginItem {
 struct PanelView: View {
     @EnvironmentObject var vpn: VPNController
     @AppStorage("showLogs") private var showLogs = true
+    @AppStorage("logsExpanded") private var logsExpanded = true
     @StateObject private var updater = Updater()
+    @AppStorage("icon") private var icon = AppIcon.shield.rawValue
+    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
+    @StateObject private var ui = UIState()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            Divider()
-            if vpn.state == .connected { details }
-            notes
-            actionButton
-            Divider()
-            logs
-            Divider()
-            updateRow
-            footer
+        Group {
+            if ui.showSettings {
+                SettingsView(ui: ui)
+            } else {
+                main
+            }
         }
         .padding(14)
         .frame(width: 380)
         .onAppear { vpn.reloadProfiles() }
     }
 
+    private var main: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Divider()
+            if vpn.state == .connected { details }
+            notes
+            actionButton
+            if showLogs {
+                Divider()
+                logs
+            }
+            Divider()
+            updateRow
+            footer
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
-            Image(nsImage: MenuBarIcon.logo ?? NSImage())
+            Image(nsImage: (AppIcon(rawValue: icon) ?? .shield).image ?? NSImage())
                 .resizable()
                 .frame(width: 30, height: 30)
                 .opacity(vpn.state == .disconnected ? 0.5 : 1)
@@ -587,7 +784,7 @@ struct PanelView: View {
     }
 
     private var logs: some View {
-        DisclosureGroup(isExpanded: $showLogs) {
+        DisclosureGroup(isExpanded: $logsExpanded) {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(vpn.logTail.isEmpty ? "Sin actividad todavía." : vpn.logTail)
@@ -637,7 +834,7 @@ struct PanelView: View {
             }
         }
         .controlSize(.small)
-        .onAppear { if updater.status == .idle { updater.check() } }
+        .onAppear { if autoCheckUpdates && updater.status == .idle { updater.check() } }
     }
 
     private var footer: some View {
@@ -650,6 +847,11 @@ struct PanelView: View {
                 Image(systemName: "folder")
             }
             .help("Conexiones (~/.config/openfortivpn). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
+            Button { ui.showSettings = true } label: {
+                Image(systemName: "gearshape")
+            }
+            .keyboardShortcut(",")
+            .help("Configuración (⌘,)")
             Button { vpn.quit() } label: {
                 Image(systemName: "power")
             }
@@ -663,12 +865,14 @@ struct PanelView: View {
 @main
 struct OpenFortiBarApp: App {
     @StateObject private var vpn = VPNController()
+    @AppStorage("icon") private var icon = AppIcon.shield.rawValue
+    @AppStorage("dimWhenDisconnected") private var dim = true
 
     var body: some Scene {
         MenuBarExtra {
             PanelView().environmentObject(vpn)
         } label: {
-            Image(nsImage: MenuBarIcon.image(for: vpn.state))
+            Image(nsImage: MenuBarIcon.image(for: vpn.state, icon: AppIcon(rawValue: icon) ?? .shield, dim: dim))
         }
         .menuBarExtraStyle(.window)
     }
