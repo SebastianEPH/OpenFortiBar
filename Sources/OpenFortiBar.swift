@@ -177,6 +177,21 @@ enum AppIcon: String, CaseIterable, Identifiable {
     static var current: AppIcon {
         AppIcon(rawValue: UserDefaults.standard.string(forKey: "icon") ?? "") ?? .shield
     }
+
+    /// Íconos por conexión, guardados como JSON {perfil: ícono} en la clave "profileIcons".
+    static func decode(_ json: String) -> [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(json.utf8))) ?? [:]
+    }
+
+    static func encode(_ map: [String: String]) -> String {
+        (try? String(decoding: JSONEncoder().encode(map), as: UTF8.self)) ?? "{}"
+    }
+
+    /// Ícono de la conexión seleccionada; si no tiene uno propio, el ícono de la app.
+    static func resolve(app: String, profileIcons: String, profile: String?) -> AppIcon {
+        if let profile, let raw = decode(profileIcons)[profile], let icon = AppIcon(rawValue: raw) { return icon }
+        return AppIcon(rawValue: app) ?? .shield
+    }
 }
 
 @MainActor
@@ -509,7 +524,19 @@ struct SettingsView: View {
     @AppStorage("dimWhenDisconnected") private var dim = true
     @AppStorage("showLogs") private var showLogs = true
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
+    @AppStorage("profileIcons") private var profileIcons = "{}"
     @ObservedObject var ui: UIState
+
+    private func profileBinding(_ id: String) -> Binding<String> {
+        Binding(
+            get: { AppIcon.decode(profileIcons)[id] ?? "" },
+            set: { value in
+                var map = AppIcon.decode(profileIcons)
+                map[id] = value.isEmpty ? nil : value
+                profileIcons = AppIcon.encode(map)
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -521,7 +548,7 @@ struct SettingsView: View {
             }
             Divider()
 
-            Text("Ícono").font(.subheadline.bold())
+            Text("Ícono de la app").font(.subheadline.bold())
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                 ForEach(AppIcon.allCases) { option in
                     Button { select(option) } label: {
@@ -554,6 +581,29 @@ struct SettingsView: View {
             }
             .controlSize(.small)
             Toggle("Atenuar el ícono cuando está desconectado", isOn: $dim)
+
+            if !vpn.profiles.isEmpty {
+                Divider()
+                Text("Ícono por conexión").font(.subheadline.bold())
+                Text("Al seleccionar una conexión en el panel, la barra muestra su ícono.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    ForEach(vpn.profiles) { profile in
+                        GridRow {
+                            Text(profile.name).lineLimit(1)
+                            Picker("", selection: profileBinding(profile.id)) {
+                                Text("Igual que la app").tag("")
+                                Divider()
+                                ForEach(AppIcon.allCases.filter { $0 != .custom || $0.image != nil }) {
+                                    Text($0.title).tag($0.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 170)
+                        }
+                    }
+                }
+            }
 
             Divider()
             Text("General").font(.subheadline.bold())
@@ -638,6 +688,7 @@ struct PanelView: View {
     @AppStorage("logsExpanded") private var logsExpanded = true
     @StateObject private var updater = Updater()
     @AppStorage("icon") private var icon = AppIcon.shield.rawValue
+    @AppStorage("profileIcons") private var profileIcons = "{}"
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
     @StateObject private var ui = UIState()
 
@@ -673,7 +724,7 @@ struct PanelView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(nsImage: (AppIcon(rawValue: icon) ?? .shield).image ?? NSImage())
+            Image(nsImage: AppIcon.resolve(app: icon, profileIcons: profileIcons, profile: vpn.selected?.id).image ?? NSImage())
                 .resizable()
                 .frame(width: 30, height: 30)
                 .opacity(vpn.state == .disconnected ? 0.5 : 1)
@@ -867,12 +918,13 @@ struct OpenFortiBarApp: App {
     @StateObject private var vpn = VPNController()
     @AppStorage("icon") private var icon = AppIcon.shield.rawValue
     @AppStorage("dimWhenDisconnected") private var dim = true
+    @AppStorage("profileIcons") private var profileIcons = "{}"
 
     var body: some Scene {
         MenuBarExtra {
             PanelView().environmentObject(vpn)
         } label: {
-            Image(nsImage: MenuBarIcon.image(for: vpn.state, icon: AppIcon(rawValue: icon) ?? .shield, dim: dim))
+            Image(nsImage: MenuBarIcon.image(for: vpn.state, icon: AppIcon.resolve(app: icon, profileIcons: profileIcons, profile: vpn.selected?.id), dim: dim))
         }
         .menuBarExtraStyle(.window)
     }

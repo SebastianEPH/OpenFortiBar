@@ -1,5 +1,26 @@
 # Cambios
 
+## [1.4.0] - 2026-11-10
+
+### Agregado
+- **Ícono por conexión**: cada perfil de `~/.config/openfortivpn` puede tener su propio ícono.
+  - Se configura en ⚙︎ → **Ícono por conexión**, con un selector por cada conexión.
+  - Al **seleccionar una conexión** en el panel, el ícono de la barra de menús y el del panel cambian enseguida, sin tener que conectarse.
+  - Opción **«Igual que la app»** (por defecto): la conexión usa el ícono general.
+  - Se pueden elegir los mismos 8 íconos (Escudo, UTP, Candado, Red, Llave, Túnel, Mundo y Personalizado, si ya elegiste una imagen).
+  - Ejemplo: app con «Escudo» y la conexión `utp` con «UTP». Al elegir `utp` en el panel, la barra muestra el logo de la UTP; con otra conexión vuelve el escudo.
+
+### Cambiado
+- En la configuración, la sección «Ícono» ahora se llama **«Ícono de la app»**. Es el ícono por defecto, el que se usa cuando una conexión no tiene uno propio.
+
+### Quitado
+- Nada.
+
+### Notas
+- Los íconos por conexión se guardan en las preferencias de la app (clave `profileIcons`), no en los archivos `.conf`.
+- Si renombras un archivo `.conf`, tendrás que volver a asignarle su ícono.
+- No hace falta reinstalar el helper. Actualiza desde el botón **Actualizar** del panel.
+
 ## [1.3.0] - 2026-11-10
 
 ### Agregado

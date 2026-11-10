@@ -15,7 +15,7 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
 - Varios perfiles de conexión (`~/.config/openfortivpn/*.conf`)
 - DNS dividido: los dominios internos se resuelven con el DNS de la VPN (`# dns-domains:` en el perfil)
 - No pide contraseña de administrador cada vez: un helper root mínimo y protegido, con una regla `sudo` limitada
-- Configuración (⚙︎ / ⌘,): ocho íconos para elegir (Escudo, UTP, Candado, Red, Llave, Túnel, Mundo) o una imagen tuya; logs, actualizaciones y más
+- Configuración (⚙︎ / ⌘,): ocho íconos para elegir (Escudo, UTP, Candado, Red, Llave, Túnel, Mundo) o una imagen tuya, y un ícono distinto para cada conexión; logs, actualizaciones y más
 - Botón **Actualizar** que instala el último release de GitHub
 - Opción para abrirse al iniciar sesión. La VPN nunca se conecta sola
 - CLI opcional: `openforti-cli [perfil]`
