@@ -1,5 +1,24 @@
 # Cambios
 
+## [1.4.2] - 2026-11-10
+
+### Cambiado
+- **Las actualizaciones ahora están en la configuración (⚙︎)**, en una sección nueva llamada **«Actualizaciones»**, y ya no en el panel principal. La sección muestra:
+  - La versión instalada.
+  - El estado: «Buscando…», «Estás en la última versión», «Nueva versión vX.Y.Z» o el error.
+  - El botón **Buscar actualizaciones** o, si hay una versión nueva, **Actualizar ahora**.
+  - La opción «Buscar actualizaciones al abrir el panel», que antes estaba en «General».
+- El panel principal queda más limpio: estado, conexión, logs y pie.
+
+### Agregado
+- **Aviso en el engranaje**: cuando hay una versión nueva, el botón ⚙︎ muestra un punto naranja, y al pasar el mouse dice qué versión está disponible.
+
+### Quitado
+- La fila de versión y actualizaciones que estaba encima del pie del panel principal.
+
+### Notas
+- La búsqueda automática sigue funcionando igual: se hace al abrir el panel, si está activada.
+
 ## [1.4.1] - 2026-11-10
 
 ### Corregido

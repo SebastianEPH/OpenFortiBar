@@ -560,6 +560,29 @@ struct SettingsView: View {
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
     @AppStorage("profileIcons") private var profileIcons = "{}"
     @ObservedObject var ui: UIState
+    @ObservedObject var updater: Updater
+
+    private var updateRow: some View {
+        HStack(spacing: 8) {
+            Text("v\(Updater.currentVersion)").font(.caption).foregroundStyle(.secondary)
+            switch updater.status {
+            case .idle: EmptyView()
+            case .checking: ProgressView().controlSize(.mini); Text("Buscando…").font(.caption)
+            case .upToDate: Text("Estás en la última versión").font(.caption).foregroundStyle(.green)
+            case .available(let v): Text("Nueva versión v\(v)").font(.caption).foregroundStyle(.orange)
+            case .downloading: ProgressView().controlSize(.mini); Text("Actualizando…").font(.caption)
+            case .failed(let m): Text(m).font(.caption).foregroundStyle(.red)
+            }
+            Spacer()
+            if case .available = updater.status {
+                Button("Actualizar ahora") { updater.install(beforeQuit: vpn.stopTunnel) }.buttonStyle(.borderedProminent)
+            } else {
+                Button("Buscar actualizaciones") { updater.check() }
+                    .disabled(updater.status == .checking || updater.status == .downloading)
+            }
+        }
+        .controlSize(.small)
+    }
 
     private func profileBinding(_ id: String) -> Binding<String> {
         Binding(
@@ -643,6 +666,10 @@ struct SettingsView: View {
             Text("General").font(.subheadline.bold())
             Toggle("Abrir al iniciar sesión", isOn: $vpn.launchAtLogin)
             Toggle("Mostrar logs en el panel", isOn: $showLogs)
+
+            Divider()
+            Text("Actualizaciones").font(.subheadline.bold())
+            updateRow
             Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
 
             Divider()
@@ -729,7 +756,7 @@ struct PanelView: View {
     var body: some View {
         Group {
             if ui.showSettings {
-                SettingsView(ui: ui)
+                SettingsView(ui: ui, updater: updater)
             } else {
                 main
             }
@@ -741,7 +768,10 @@ struct PanelView: View {
             Color.clear.onChange(of: geo.size.height, initial: true) { PanelWindow.fit() }
         })
         .background(WindowReader())
-        .onAppear { vpn.reloadProfiles() }
+        .onAppear {
+            vpn.reloadProfiles()
+            if autoCheckUpdates && updater.status == .idle { updater.check() }
+        }
     }
 
     private var main: some View {
@@ -756,7 +786,6 @@ struct PanelView: View {
                 logs
             }
             Divider()
-            updateRow
             footer
         }
     }
@@ -904,29 +933,6 @@ struct PanelView: View {
         }
     }
 
-    private var updateRow: some View {
-        HStack(spacing: 8) {
-            Text("v\(Updater.currentVersion)").font(.caption).foregroundStyle(.secondary)
-            switch updater.status {
-            case .idle: EmptyView()
-            case .checking: ProgressView().controlSize(.mini); Text("Buscando…").font(.caption)
-            case .upToDate: Text("Estás en la última versión").font(.caption).foregroundStyle(.green)
-            case .available(let v): Text("Nueva versión v\(v)").font(.caption).foregroundStyle(.orange)
-            case .downloading: ProgressView().controlSize(.mini); Text("Actualizando…").font(.caption)
-            case .failed(let m): Text(m).font(.caption).foregroundStyle(.red)
-            }
-            Spacer()
-            if case .available = updater.status {
-                Button("Actualizar") { updater.install(beforeQuit: vpn.stopTunnel) }
-            } else {
-                Button("Buscar actualizaciones") { updater.check() }
-                    .disabled(updater.status == .checking || updater.status == .downloading)
-            }
-        }
-        .controlSize(.small)
-        .onAppear { if autoCheckUpdates && updater.status == .idle { updater.check() } }
-    }
-
     private var footer: some View {
         HStack {
             Toggle("Abrir al iniciar sesión", isOn: $vpn.launchAtLogin)
@@ -939,9 +945,14 @@ struct PanelView: View {
             .help("Conexiones (~/.config/openfortivpn). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
             Button { ui.showSettings = true } label: {
                 Image(systemName: "gearshape")
+                    .overlay(alignment: .topTrailing) {
+                        if case .available = updater.status {
+                            Circle().fill(.orange).frame(width: 6, height: 6).offset(x: 3, y: -3)
+                        }
+                    }
             }
             .keyboardShortcut(",")
-            .help("Configuración (⌘,)")
+            .help({ if case .available(let v) = updater.status { return "Configuración — nueva versión v\(v) disponible" }; return "Configuración (⌘,)" }())
             Button { vpn.quit() } label: {
                 Image(systemName: "power")
             }
