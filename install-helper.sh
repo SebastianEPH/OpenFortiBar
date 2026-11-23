@@ -45,11 +45,11 @@ for conf in $BASE/profiles/*.conf(N); do
   sed -i '' -E "s|^(ca-file *= *).*/([^/]+)$|\\1$BASE/profiles/\\2|" $conf
 done
 
-# Regla sudo: solo conectar y desconectar
+# Regla sudo: solo conectar, desconectar e importar perfiles
 SUDOERS=$(mktemp)
 cat > $SUDOERS <<EOF
-# OpenForti Bar: conectar/desconectar sin contraseña (solo el helper protegido)
-$USER_NAME ALL=(root) NOPASSWD: $BASE/vpn-helper start *, $BASE/vpn-helper stop
+# OpenForti Bar: conectar, desconectar e importar perfiles sin contraseña (solo el helper protegido)
+$USER_NAME ALL=(root) NOPASSWD: $BASE/vpn-helper start *, $BASE/vpn-helper stop, $BASE/vpn-helper import
 EOF
 visudo -cf $SUDOERS >/dev/null
 install -o root -g wheel -m 440 $SUDOERS /etc/sudoers.d/openfortibar

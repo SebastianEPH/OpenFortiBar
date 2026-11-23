@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Darwin
+import LocalAuthentication
 import SwiftUI
 
 // MARK: - Helper root (instalado con install-helper.sh)
@@ -29,6 +30,25 @@ enum Helper {
             NSAppleScript(source: source)?.executeAndReturnError(&error)
             let message = error.map { ($0[NSAppleScript.errorMessage] as? String) ?? "error desconocido" }
             DispatchQueue.main.async { MainActor.assumeIsolated { completion(message) } }
+        }
+    }
+
+    /// Pide Touch ID (o la contraseña de tu Mac si no hay huella) y copia los perfiles con "vpn-helper import",
+    /// que corre sin contraseña de sudo. Si el helper instalado es antiguo y no lo admite, lo reinstala
+    /// una vez con la ventana de administrador de macOS.
+    @MainActor static func importProfiles(completion: @escaping @MainActor (String?) -> Void) {
+        let context = LAContext()
+        context.localizedCancelTitle = "Cancelar"
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "aplicar los cambios de la conexión") { ok, error in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard ok else { return completion(error?.localizedDescription ?? "cancelado") }
+                    if isOutdated { return applyProfiles(completion: completion) }
+                    run(["import"]) { error in
+                        if error == nil { completion(nil) } else { applyProfiles(completion: completion) }
+                    }
+                }
+            }
         }
     }
 
@@ -648,6 +668,58 @@ final class Updater: ObservableObject {
 
 // MARK: - Configuración (⚙︎)
 
+/// Campos editables de un perfil .conf; el resto de líneas se conserva tal cual.
+struct ProfileForm: Equatable {
+    var name = "", host = "", port = "", domains = "", setDNS = true
+
+    init() {}
+    init(text: String) {
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") {
+                let body = line.dropFirst().trimmingCharacters(in: .whitespaces)
+                if let v = Self.value(body, "nombre", ":") { name = v }
+                if let v = Self.value(body, "dns-domains", ":") { domains = v }
+            } else {
+                if let v = Self.value(line, "host", "=") { host = v }
+                if let v = Self.value(line, "port", "=") { port = v }
+                if let v = Self.value(line, "set-dns", "=") { setDNS = v != "0" }
+            }
+        }
+    }
+
+    private static func value(_ line: String, _ key: String, _ sep: Character) -> String? {
+        guard let i = line.firstIndex(of: sep), line[..<i].trimmingCharacters(in: .whitespaces) == key else { return nil }
+        return line[line.index(after: i)...].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Devuelve `text` con los campos del formulario puestos (reemplaza la línea o la agrega).
+    func apply(to text: String) -> String {
+        var lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        func set(_ key: String, _ value: String, comment: Bool) {
+            let match: (String) -> Bool = { raw in
+                var l = raw.trimmingCharacters(in: .whitespaces)
+                if comment { guard l.hasPrefix("#") else { return false }; l = l.dropFirst().trimmingCharacters(in: .whitespaces) }
+                else if l.hasPrefix("#") { return false }
+                guard let i = l.firstIndex(where: { $0 == "=" || $0 == ":" }) else { return false }
+                return l[..<i].trimmingCharacters(in: .whitespaces) == key
+            }
+            let newLine = comment ? "# \(key): \(value)" : "\(key) = \(value)"
+            if let i = lines.firstIndex(where: match) {
+                if value.isEmpty { lines.remove(at: i) } else { lines[i] = newLine }
+            } else if !value.isEmpty {
+                if comment { lines.insert(newLine, at: lines.prefix { $0.hasPrefix("#") }.count) } else { lines.append(newLine) }
+            }
+        }
+        set("nombre", name.trimmingCharacters(in: .whitespaces), comment: true)
+        set("dns-domains", domains.trimmingCharacters(in: .whitespaces), comment: true)
+        set("host", host.trimmingCharacters(in: .whitespaces), comment: false)
+        set("port", port.trimmingCharacters(in: .whitespaces), comment: false)
+        set("set-dns", setDNS ? "1" : "0", comment: false)
+        return lines.joined(separator: "\n")
+    }
+}
+
 /// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
 @MainActor
 final class UIState: ObservableObject {
@@ -655,6 +727,9 @@ final class UIState: ObservableObject {
     @Published var editProfileID = ""
     @Published var editText = ""
     @Published var editSaved = ""
+    @Published var form = ProfileForm()
+    @Published var formSaved = ProfileForm()
+    @Published var showRaw = false
     @Published var editMessage: String?
     @Published var editError = false
     @Published var applying = false
@@ -868,30 +943,60 @@ struct SettingsView: View {
             Picker("Perfil", selection: Binding(get: { ui.editProfileID }, set: { loadProfile($0) })) {
                 ForEach(vpn.profiles) { Text($0.name).tag($0.id) }
             }
-            .frame(maxWidth: 260)
-            TextEditor(text: $ui.editText)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(height: 150)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            .labelsHidden()
+            .frame(maxWidth: 200, alignment: .leading)
+            .onAppear { if ui.editProfileID.isEmpty { loadProfile(vpn.selectedID) } }
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("Nombre").foregroundStyle(.secondary)
+                    TextField("UTP", text: $ui.form.name)
+                }
+                GridRow {
+                    Text("Servidor").foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        TextField("vpn.empresa.com", text: $ui.form.host)
+                        Text(":").foregroundStyle(.secondary)
+                        TextField("443", text: $ui.form.port).frame(width: 60)
+                    }
+                }
+                GridRow {
+                    Text("Dominios").foregroundStyle(.secondary)
+                    TextField("empresa.com intranet.local", text: $ui.form.domains)
+                        .help("Dominios que se resuelven con el DNS de la VPN, separados por espacio")
+                }
+                GridRow {
+                    Text("")
+                    Toggle("Usar el DNS de la VPN", isOn: $ui.form.setDNS)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .disabled(ui.showRaw)
+
+            DisclosureGroup("Avanzado", isExpanded: Binding(get: { ui.showRaw }, set: { toggleRaw($0) })) {
+                TextEditor(text: $ui.editText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(height: 120)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            }
+            .font(.caption)
+
             HStack {
-                Button("Guardar y aplicar") { saveProfile() }
+                Button("Guardar") { saveProfile() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(ui.editText == ui.editSaved || ui.applying)
-                Button("Descartar") { ui.editText = ui.editSaved; ui.editMessage = nil }
-                    .disabled(ui.editText == ui.editSaved || ui.applying)
+                    .disabled(!hasChanges || ui.applying)
+                Button("Descartar") { loadProfile(ui.editProfileID) }
+                    .disabled(!hasChanges || ui.applying)
                 if ui.applying { ProgressView().controlSize(.mini) }
-                Spacer()
-                Button { NSWorkspace.shared.open(Helper.sourceProfiles) } label: { Image(systemName: "folder") }
-                    .help("Abrir ~/.openforti/profiles")
             }
             .controlSize(.small)
-            Text(ui.editMessage ?? "Al guardar, macOS pide tu contraseña para aplicar el cambio. Se usa en la próxima conexión.")
-                .font(.caption)
-                .foregroundStyle(ui.editMessage == nil ? .secondary : (ui.editError ? Color.red : Color.green))
-                .textSelection(.enabled)
-                .onAppear { if ui.editProfileID.isEmpty { loadProfile(vpn.selectedID) } }
+            if let message = ui.editMessage {
+                Text(message).font(.caption).foregroundStyle(ui.editError ? .red : .green).textSelection(.enabled)
+            }
         }
     }
+
+    private var hasChanges: Bool { ui.form != ui.formSaved || ui.editText != ui.editSaved }
 
     private func sourceFile(_ id: String) -> URL { Helper.sourceProfiles.appendingPathComponent("\(id).conf") }
 
@@ -900,24 +1005,39 @@ struct SettingsView: View {
         ui.editProfileID = id
         ui.editText = (try? String(contentsOf: sourceFile(id), encoding: .utf8)) ?? ""
         ui.editSaved = ui.editText
+        ui.form = ProfileForm(text: ui.editText)
+        ui.formSaved = ui.form
+        ui.showRaw = false
         ui.editMessage = nil
     }
 
+    /// Al abrir "Avanzado" el texto refleja el formulario; al cerrarlo, el formulario refleja el texto.
+    private func toggleRaw(_ open: Bool) {
+        if open { ui.editText = ui.form.apply(to: ui.editText) } else { ui.form = ProfileForm(text: ui.editText) }
+        ui.showRaw = open
+    }
+
     private func saveProfile() {
+        let text = ui.showRaw ? ui.editText : ui.form.apply(to: ui.editText)
         let file = sourceFile(ui.editProfileID)
         do {
-            try ui.editText.write(to: file, atomically: true, encoding: .utf8)
+            try text.write(to: file, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             ui.editError = true; ui.editMessage = "No se pudo guardar: \(error.localizedDescription)"; return
         }
-        ui.editSaved = ui.editText
         ui.applying = true
-        Helper.applyProfiles { error in
+        ui.editMessage = nil
+        Helper.importProfiles { error in
             ui.applying = false
-            ui.editError = error != nil
-            ui.editMessage = error.map { "Guardado, pero no se aplicó: \($0)" } ?? "Guardado y aplicado. Se usará en la próxima conexión."
             vpn.reloadProfiles()
+            if let error {
+                ui.editError = true; ui.editMessage = "Guardado, pero no se aplicó: \(error)"
+            } else {
+                let id = ui.editProfileID
+                loadProfile(id)
+                ui.editError = false; ui.editMessage = "Guardado. Se usará en la próxima conexión."
+            }
         }
     }
 

@@ -1,5 +1,15 @@
 # Cambios
 
+## [1.6.0] - 2026-11-23
+
+### Cambiado
+- **Editor de conexión con formulario**: Nombre, Servidor y puerto, Dominios y «Usar el DNS de la VPN». El texto completo del `.conf` queda en **Avanzado**.
+- **Guardar con Touch ID**: los cambios se aplican con tu huella (o la contraseña de tu Mac si no hay huella), sin la ventana de administrador. El helper valida cada perfil y solo acepta opciones conocidas e inofensivas.
+- **Certificados generados en cada conexión, en una carpeta temporal**: las raíces de confianza se toman del sistema (las mismas que Safari) y, si falta el certificado intermedio del servidor, se descarga en el momento. Todo se guarda en `/tmp/openfortibar.XXXXXX` (solo root) y se borra al desconectar. Ya no hace falta ningún `.pem` en el perfil.
+
+### Nota
+- La primera vez tras actualizar, pulsa **Actualizar componente** en el panel (pide la contraseña de administrador una sola vez).
+
 ## [1.5.3] - 2026-11-23
 
 ### Cambiado
