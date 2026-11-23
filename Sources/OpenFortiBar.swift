@@ -17,6 +17,12 @@ enum Helper {
 
     static var isInstalled: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
+    /// El vpn-helper instalado difiere del que trae esta versión de la app (hay que reinstalarlo con sudo).
+    static var isOutdated: Bool {
+        guard isInstalled, let bundled = Bundle.main.url(forResource: "vpn-helper", withExtension: "sh") else { return false }
+        return !FileManager.default.contentsEqual(atPath: bundled.path, andPath: executable.path)
+    }
+
     /// Ejecuta `sudo -n vpn-helper <args>`; devuelve el mensaje de error, o nil si salió bien.
     static func run(_ args: [String], completion: @escaping @MainActor (String?) -> Void) {
         let process = Process()
@@ -625,12 +631,42 @@ final class Updater: ObservableObject {
     }
 }
 
+/// Lectura del .conf para mostrarlo en el panel (contraseñas ocultas).
+enum ProfileInfo {
+    static func read(_ file: URL) -> String {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return "No se pudo leer el archivo." }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let key = line.split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) ?? ""
+            return ["password", "otp", "cookie"].contains(key) ? "\(key) = ••••••" : String(line)
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Compara ignorando la ruta de ca-file/user-cert, que install-helper.sh reescribe.
+    static func differs(active: URL, source: URL) -> Bool {
+        func normalized(_ url: URL) -> [String]? {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+            return text.split(separator: "\n").map { line in
+                let s = line.trimmingCharacters(in: .whitespaces)
+                for key in ["ca-file", "user-cert", "user-key"] where s.hasPrefix(key) {
+                    return key + "=" + (s.split(separator: "/").last.map(String.init) ?? "")
+                }
+                return s
+            }.filter { !$0.isEmpty }
+        }
+        guard let a = normalized(active), let b = normalized(source) else { return false }
+        return a != b
+    }
+}
+
 // MARK: - Configuración (⚙︎)
 
 /// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
 @MainActor
 final class UIState: ObservableObject {
     @Published var showSettings = false
+    @Published var showProfileInfo = false
     private var observer: Any?
 
     init() {
@@ -929,6 +965,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
+            if ui.showProfileInfo { profileInfo }
             if vpn.state == .connected { details }
             notes
             actionButton
@@ -962,6 +999,51 @@ struct PanelView: View {
                 .fixedSize()
                 .disabled(vpn.state != .disconnected)
                 .help(vpn.selected?.host ?? "")
+                Button { ui.showProfileInfo.toggle() } label: {
+                    Image(systemName: ui.showProfileInfo ? "info.circle.fill" : "info.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Ver la configuración de esta conexión")
+            }
+        }
+    }
+
+    @ViewBuilder private var profileInfo: some View {
+        if let profile = vpn.selected {
+            let active = ProfileInfo.read(profile.file)
+            let source = Helper.sourceProfiles.appendingPathComponent(profile.file.lastPathComponent)
+            let differs = Helper.isInstalled && ProfileInfo.differs(active: profile.file, source: source)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Comando").font(.caption).foregroundStyle(.secondary)
+                    Text("openfortivpn -c \(profile.file.path) --saml-login")
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("Archivo en uso (\(profile.file.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(active)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    if differs {
+                        Text("Tu copia en ~/.openforti/profiles es distinta. Para aplicarla: \(Helper.installCommand)")
+                            .font(.caption).foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                    HStack {
+                        Button("Editar mi copia") { NSWorkspace.shared.open(source) }
+                        Button("Copiar") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(active, forType: .string)
+                        }
+                        Spacer()
+                    }
+                    .controlSize(.small)
+                }
+            } label: {
+                Text("Configuración de \(profile.name)").font(.headline)
             }
         }
     }
@@ -987,9 +1069,11 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var notes: some View {
-        if !Helper.isInstalled {
+        if !Helper.isInstalled || Helper.isOutdated {
             VStack(alignment: .leading, spacing: 6) {
-                Label("Falta un paso (una sola vez): instalar el helper para conectar sin contraseña. En Terminal ejecuta:",
+                Label(Helper.isInstalled
+                      ? "La app se actualizó y el helper también tiene cambios. Para aplicarlos, en Terminal ejecuta:"
+                      : "Falta un paso (una sola vez): instalar el helper para conectar sin contraseña. En Terminal ejecuta:",
                       systemImage: "info.circle.fill")
                     .font(.caption)
                 HStack {

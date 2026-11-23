@@ -1,5 +1,14 @@
 # Cambios
 
+## [1.5.1] - 2026-11-23
+
+### Corregido
+- **La VPN ya no falla cuando el servidor renueva su certificado.** Si el gateway no envía su certificado intermedio (como pasó con la UTP el 12/11/2026), el helper lo descarga en cada conexión desde la URL del propio certificado (AIA), igual que un navegador. Solo lo usa si lo firma una CA que ya está en el `ca-file` del perfil, y no guarda nada entre conexiones.
+
+### Agregado
+- **Botón ⓘ junto al selector de conexión**: muestra el comando de conexión y el `.conf` que se usa realmente (contraseñas ocultas), avisa si tu copia en `~/.openforti/profiles` es distinta y permite editarla o copiarla.
+- **Aviso de helper desactualizado**: después de actualizar la app, si el helper instalado es de una versión anterior, el panel muestra el comando para reinstalarlo.
+
 ## [1.5.0] - 2026-11-10
 
 ### Agregado

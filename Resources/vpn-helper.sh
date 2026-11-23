@@ -40,13 +40,52 @@ EOF
   print "INFO:   DNS de la VPN (${servers[*]}) para: ${domains[*]}" >> $LOG
 }
 
+conf_value() { sed -n "s/^ *$1 *= *//p" $2 | head -1 }
+
+# El gateway puede no enviar su certificado intermedio (openfortivpn no lo descarga, los navegadores sí).
+# Si la validación falla, se descarga el intermedio desde la URL AIA del propio certificado y se usa
+# solo si lo firma una CA que ya está en el ca-file del perfil. Se hace en cada conexión, sin caché.
+ca_with_chain() {
+  local conf=$1 name=${1:t:r}
+  local ca=$(conf_value ca-file $conf) host=$(conf_value host $conf) port=$(conf_value port $conf)
+  port=${port:-443}
+  local merged=$RUN/$name-ca.pem
+  [[ -f $ca && -n $host ]] || { print $ca; return }
+  # Cada conexión empieza de cero: nada de conexiones anteriores se reutiliza.
+  rm -f $RUN/$name-aia-*.pem(N)
+  cp $ca $merged
+
+  # Se valida con "openssl verify" sobre el certificado descargado: el "Verify return code" de
+  # s_client en LibreSSL dice "ok" aunque la cadena esté incompleta.
+  local leaf=$RUN/$name-leaf.pem
+  echo | openssl s_client -connect $host:$port -servername $host 2>/dev/null | openssl x509 > $leaf 2>/dev/null ||
+    { rm -f $leaf; print $merged; return }
+  if openssl verify -CAfile $merged $leaf >/dev/null 2>&1; then rm -f $leaf; print $merged; return; fi
+
+  local url=$(openssl x509 -in $leaf -noout -text | sed -n 's/.*CA Issuers - URI:\(http[^ ,]*\).*/\1/p' | head -1)
+  [[ -n $url ]] || { print $ca; return }
+  local tmp=$RUN/$name-aia.tmp
+  if curl -fsS --max-time 10 $url -o $tmp.der &&
+     { openssl x509 -inform der -in $tmp.der -out $tmp 2>/dev/null || openssl x509 -in $tmp.der -out $tmp 2>/dev/null } &&
+     openssl verify -CAfile $ca $tmp >/dev/null 2>&1 &&
+     openssl verify -CAfile $ca -untrusted $tmp $leaf >/dev/null 2>&1; then
+    cat $tmp >> $merged
+    print "INFO:   Certificado intermedio descargado para esta conexión: $(openssl x509 -in $tmp -noout -subject)" >> $LOG
+  else
+    print "WARN:   No se pudo completar la cadena del certificado desde $url" >> $LOG
+  fi
+  rm -f $tmp $tmp.der $leaf
+  print $merged
+}
+
 run_tunnel() {
   local conf=$1
   trap '' HUP
   dns_clear
   local before=($(nameservers))
+  local ca=$(ca_with_chain $conf)
 
-  $OPENFORTIVPN -c $conf --saml-login >> $LOG 2>&1 &
+  $OPENFORTIVPN -c $conf ${ca:+--ca-file=$ca} --saml-login >> $LOG 2>&1 &
   local pid=$!
   trap 'kill -TERM $pid 2>/dev/null' TERM INT
 
