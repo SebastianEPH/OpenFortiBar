@@ -17,6 +17,21 @@ enum Helper {
 
     static var isInstalled: Bool { FileManager.default.isExecutableFile(atPath: executable.path) }
 
+    /// Ejecuta install-helper.sh con la ventana de contraseña de macOS (copia los perfiles a la carpeta protegida).
+    @MainActor static func applyProfiles(completion: @escaping @MainActor (String?) -> Void) {
+        guard let script = Bundle.main.url(forResource: "install-helper", withExtension: "sh") else {
+            return completion("no se encontró install-helper.sh")
+        }
+        let command = "'\(script.path)' '\(NSUserName())'"
+        let source = "do shell script \"\(command.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+        DispatchQueue.global().async {
+            var error: NSDictionary?
+            NSAppleScript(source: source)?.executeAndReturnError(&error)
+            let message = error.map { ($0[NSAppleScript.errorMessage] as? String) ?? "error desconocido" }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(message) } }
+        }
+    }
+
     /// El vpn-helper instalado difiere del que trae esta versión de la app (hay que reinstalarlo con sudo).
     static var isOutdated: Bool {
         guard isInstalled, let bundled = Bundle.main.url(forResource: "vpn-helper", withExtension: "sh") else { return false }
@@ -631,42 +646,18 @@ final class Updater: ObservableObject {
     }
 }
 
-/// Lectura del .conf para mostrarlo en el panel (contraseñas ocultas).
-enum ProfileInfo {
-    static func read(_ file: URL) -> String {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return "No se pudo leer el archivo." }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-            let key = line.split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) ?? ""
-            return ["password", "otp", "cookie"].contains(key) ? "\(key) = ••••••" : String(line)
-        }
-        .joined(separator: "\n")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Compara ignorando la ruta de ca-file/user-cert, que install-helper.sh reescribe.
-    static func differs(active: URL, source: URL) -> Bool {
-        func normalized(_ url: URL) -> [String]? {
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-            return text.split(separator: "\n").map { line in
-                let s = line.trimmingCharacters(in: .whitespaces)
-                for key in ["ca-file", "user-cert", "user-key"] where s.hasPrefix(key) {
-                    return key + "=" + (s.split(separator: "/").last.map(String.init) ?? "")
-                }
-                return s
-            }.filter { !$0.isEmpty }
-        }
-        guard let a = normalized(active), let b = normalized(source) else { return false }
-        return a != b
-    }
-}
-
 // MARK: - Configuración (⚙︎)
 
 /// Estado local de la UI (se evita `@State`, que con swiftc directo requiere el plugin de macros).
 @MainActor
 final class UIState: ObservableObject {
     @Published var showSettings = false
-    @Published var showProfileInfo = false
+    @Published var editProfileID = ""
+    @Published var editText = ""
+    @Published var editSaved = ""
+    @Published var editMessage: String?
+    @Published var editError = false
+    @Published var applying = false
     private var observer: Any?
 
     init() {
@@ -847,17 +838,8 @@ struct SettingsView: View {
             Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
 
             Divider()
-            Text("Conexiones").font(.subheadline.bold())
-            HStack {
-                Button("Abrir carpeta de perfiles") { NSWorkspace.shared.open(Helper.sourceProfiles) }
-                Button("Copiar comando del helper") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(Helper.installCommand, forType: .string)
-                }
-            }
-            .controlSize(.small)
-            Text("Tus perfiles están en ~/.openforti/profiles. Después de editarlos, ejecuta el comando del helper en Terminal.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("Conexión").font(.subheadline.bold())
+            connectionEditor
 
             Divider()
             Text("Backup").font(.subheadline.bold())
@@ -877,6 +859,66 @@ struct SettingsView: View {
             }
         }
         .toggleStyle(.checkbox)
+    }
+
+    @ViewBuilder private var connectionEditor: some View {
+        if vpn.profiles.isEmpty {
+            Text("No hay conexiones en ~/.openforti/profiles.").font(.caption).foregroundStyle(.secondary)
+        } else {
+            Picker("Perfil", selection: Binding(get: { ui.editProfileID }, set: { loadProfile($0) })) {
+                ForEach(vpn.profiles) { Text($0.name).tag($0.id) }
+            }
+            .frame(maxWidth: 260)
+            TextEditor(text: $ui.editText)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(height: 150)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            HStack {
+                Button("Guardar y aplicar") { saveProfile() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(ui.editText == ui.editSaved || ui.applying)
+                Button("Descartar") { ui.editText = ui.editSaved; ui.editMessage = nil }
+                    .disabled(ui.editText == ui.editSaved || ui.applying)
+                if ui.applying { ProgressView().controlSize(.mini) }
+                Spacer()
+                Button { NSWorkspace.shared.open(Helper.sourceProfiles) } label: { Image(systemName: "folder") }
+                    .help("Abrir ~/.openforti/profiles")
+            }
+            .controlSize(.small)
+            Text(ui.editMessage ?? "Al guardar, macOS pide tu contraseña para aplicar el cambio. Se usa en la próxima conexión.")
+                .font(.caption)
+                .foregroundStyle(ui.editMessage == nil ? .secondary : (ui.editError ? Color.red : Color.green))
+                .textSelection(.enabled)
+                .onAppear { if ui.editProfileID.isEmpty { loadProfile(vpn.selectedID) } }
+        }
+    }
+
+    private func sourceFile(_ id: String) -> URL { Helper.sourceProfiles.appendingPathComponent("\(id).conf") }
+
+    private func loadProfile(_ id: String) {
+        let id = vpn.profiles.contains { $0.id == id } ? id : (vpn.profiles.first?.id ?? "")
+        ui.editProfileID = id
+        ui.editText = (try? String(contentsOf: sourceFile(id), encoding: .utf8)) ?? ""
+        ui.editSaved = ui.editText
+        ui.editMessage = nil
+    }
+
+    private func saveProfile() {
+        let file = sourceFile(ui.editProfileID)
+        do {
+            try ui.editText.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } catch {
+            ui.editError = true; ui.editMessage = "No se pudo guardar: \(error.localizedDescription)"; return
+        }
+        ui.editSaved = ui.editText
+        ui.applying = true
+        Helper.applyProfiles { error in
+            ui.applying = false
+            ui.editError = error != nil
+            ui.editMessage = error.map { "Guardado, pero no se aplicó: \($0)" } ?? "Guardado y aplicado. Se usará en la próxima conexión."
+            vpn.reloadProfiles()
+        }
     }
 
     private func select(_ option: AppIcon) {
@@ -965,7 +1007,6 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
-            if ui.showProfileInfo { profileInfo }
             if vpn.state == .connected { details }
             notes
             actionButton
@@ -999,51 +1040,6 @@ struct PanelView: View {
                 .fixedSize()
                 .disabled(vpn.state != .disconnected)
                 .help(vpn.selected?.host ?? "")
-                Button { ui.showProfileInfo.toggle() } label: {
-                    Image(systemName: ui.showProfileInfo ? "info.circle.fill" : "info.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("Ver la configuración de esta conexión")
-            }
-        }
-    }
-
-    @ViewBuilder private var profileInfo: some View {
-        if let profile = vpn.selected {
-            let active = ProfileInfo.read(profile.file)
-            let source = Helper.sourceProfiles.appendingPathComponent(profile.file.lastPathComponent)
-            let differs = Helper.isInstalled && ProfileInfo.differs(active: profile.file, source: source)
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Comando").font(.caption).foregroundStyle(.secondary)
-                    Text("openfortivpn -c \(profile.file.path) --saml-login")
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                    Text("Archivo en uso (\(profile.file.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")))")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(active)
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
-                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                    if differs {
-                        Text("Tu copia en ~/.openforti/profiles es distinta. Para aplicarla: \(Helper.installCommand)")
-                            .font(.caption).foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                    }
-                    HStack {
-                        Button("Editar mi copia") { NSWorkspace.shared.open(source) }
-                        Button("Copiar") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(active, forType: .string)
-                        }
-                        Spacer()
-                    }
-                    .controlSize(.small)
-                }
-            } label: {
-                Text("Configuración de \(profile.name)").font(.headline)
             }
         }
     }

@@ -1,5 +1,13 @@
 # Cambios
 
+## [1.5.2] - 2026-11-23
+
+### Agregado
+- **Editor de conexión en ⚙︎ Configuración → Conexión**: elige el perfil, ve y modifica su `.conf` y pulsa **Guardar y aplicar**. macOS pide tu contraseña y el cambio se copia al helper; ya no hace falta abrir Terminal.
+
+### Quitado
+- Botón ⓘ junto al selector de conexión (lo reemplaza el editor).
+
 ## [1.5.1] - 2026-11-23
 
 ### Corregido
