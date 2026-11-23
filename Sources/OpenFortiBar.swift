@@ -742,7 +742,7 @@ struct SettingsView: View {
             let safety = try Backup.restore(from: url)
             vpn.reloadProfiles()
             ui.backupError = false
-            ui.backupMessage = "Restaurado. Estado anterior guardado en \(safety.lastPathComponent). Ejecuta el comando del helper para aplicar los perfiles."
+            ui.backupMessage = "Restaurado. Estado anterior guardado en \(safety.lastPathComponent). Para aplicar los perfiles, pulsa «Guardar y aplicar» en Conexión."
         } catch {
             ui.backupError = true
             ui.backupMessage = "Error: \(error.localizedDescription)"
@@ -1068,21 +1068,30 @@ struct PanelView: View {
         if !Helper.isInstalled || Helper.isOutdated {
             VStack(alignment: .leading, spacing: 6) {
                 Label(Helper.isInstalled
-                      ? "La app se actualizó y el helper también tiene cambios. Para aplicarlos, en Terminal ejecuta:"
-                      : "Falta un paso (una sola vez): instalar el helper para conectar sin contraseña. En Terminal ejecuta:",
+                      ? "Hay una actualización del componente de conexión. Instálala para seguir conectando sin problemas."
+                      : "Falta un paso (una sola vez): instalar el componente que conecta la VPN.",
                       systemImage: "info.circle.fill")
                     .font(.caption)
                 HStack {
-                    Text(Helper.installCommand)
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Copiar") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(Helper.installCommand, forType: .string)
+                    Button(Helper.isInstalled ? "Actualizar componente" : "Instalar componente") {
+                        ui.applying = true
+                        ui.editMessage = nil
+                        Helper.applyProfiles { error in
+                            ui.applying = false
+                            ui.editError = error != nil
+                            ui.editMessage = error.map { "No se pudo instalar: \($0)" }
+                            vpn.reloadProfiles()
+                        }
                     }
-                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(ui.applying)
+                    if ui.applying { ProgressView().controlSize(.mini) }
+                    Spacer()
                 }
+                .controlSize(.small)
+                Text(ui.editError ? (ui.editMessage ?? "") : "macOS te pedirá tu contraseña.")
+                    .font(.caption)
+                    .foregroundStyle(ui.editError ? .red : .secondary)
             }
             .padding(8)
             .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
@@ -1173,7 +1182,7 @@ struct PanelView: View {
             Button { NSWorkspace.shared.open(Helper.sourceProfiles) } label: {
                 Image(systemName: "folder")
             }
-            .help("Conexiones (~/.openforti/profiles). Tras editarlas: sudo /Applications/OpenFortiBar.app/Contents/Resources/install-helper.sh")
+            .help("Conexiones (~/.openforti/profiles). Para editarlas: ⚙︎ Configuración → Conexión")
             Button { ui.showSettings = true } label: {
                 Image(systemName: "gearshape")
                     .overlay(alignment: .topTrailing) {

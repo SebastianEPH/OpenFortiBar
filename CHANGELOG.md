@@ -1,5 +1,10 @@
 # Cambios
 
+## [1.5.3] - 2026-11-23
+
+### Cambiado
+- **Instalar o actualizar el componente de conexión con un botón**: en lugar de mostrar un comando para Terminal, el panel muestra **Instalar componente** / **Actualizar componente**, que pide tu contraseña con la ventana de macOS y lo hace solo.
+
 ## [1.5.2] - 2026-11-23
 
 ### Agregado
