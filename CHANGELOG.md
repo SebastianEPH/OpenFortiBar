@@ -1,5 +1,11 @@
 # Cambios
 
+## [1.9.0] - 2026-11-24
+
+### Agregado
+- **Isla en el notch**: al conectar, el notch se expande con un brillo verde y «Conectado». Mientras está conectado queda un punto verde con un candado junto al notch. Al reconectar muestra «Reconectando…» con un brillo naranja que late y un ícono que gira. Al desconectar o perder la conexión, muestra un aviso rojo por unos segundos. En pantallas sin notch aparece arriba al centro.
+- Opciones en ⚙︎ → Personalización → «Isla en el notch»: activar los avisos y el indicador permanente.
+
 ## [1.8.0] - 2026-11-24
 
 ### Agregado

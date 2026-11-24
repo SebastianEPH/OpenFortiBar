@@ -150,7 +150,7 @@ enum ConfigDir {
 @MainActor
 enum Backup {
     /// Preferencias de la app que se guardan en el backup.
-    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile", "browser", "browserProfile", "browserAskIfClosed", "autoReconnect", "preventSleep"]
+    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile", "browser", "browserProfile", "browserAskIfClosed", "autoReconnect", "preventSleep", "notchEnabled", "notchIdle"]
 
     private static func ditto(_ args: [String]) -> Bool {
         let p = Process()
@@ -967,6 +967,8 @@ struct SettingsView: View {
     @AppStorage("settingsTab") private var tab = SettingsTab.general.rawValue
     @AppStorage("autoReconnect") private var autoReconnect = true
     @AppStorage("preventSleep") private var preventSleep = false
+    @AppStorage("notchEnabled") private var notchEnabled = true
+    @AppStorage("notchIdle") private var notchIdle = true
     @ObservedObject var ui: UIState
     @ObservedObject var updater: Updater
 
@@ -1148,6 +1150,14 @@ struct SettingsView: View {
         }
         .controlSize(.small)
         Toggle("Atenuar el ícono cuando está desconectado", isOn: $dim)
+
+        Divider()
+        Text("Isla en el notch").font(.subheadline.bold())
+        Toggle("Mostrar avisos arriba (conectado, reconectando, desconectado)", isOn: $notchEnabled)
+        Toggle("Indicador permanente junto al notch mientras está conectado", isOn: $notchIdle)
+            .disabled(!notchEnabled)
+        Text("En pantallas sin notch, la isla aparece arriba al centro.")
+            .font(.caption).foregroundStyle(.secondary)
 
         if !vpn.profiles.isEmpty {
             Divider()
@@ -1788,6 +1798,239 @@ struct PanelView: View {
 // Se usa NSStatusItem + NSPopover en lugar de MenuBarExtra: el popover ajusta su tamaño al
 // contenido SwiftUI automáticamente (preferredContentSize), sin estirarse ni dejar huecos.
 
+// MARK: - Isla en el notch
+
+/// Lo que muestra la isla junto al notch.
+enum NotchPhase: Equatable {
+    case hidden, idle, connecting(String), reconnecting, connected, lost(String)
+
+    var wing: CGFloat {
+        switch self {
+        case .hidden: 0
+        case .idle: 26
+        case .connected: 96
+        case .connecting, .reconnecting, .lost: 118
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .idle, .connected: .green
+        case .connecting, .reconnecting: .orange
+        case .lost: .red
+        case .hidden: .clear
+        }
+    }
+    var busy: Bool {
+        switch self { case .connecting, .reconnecting: true; default: false }
+    }
+}
+
+@MainActor final class NotchModel: ObservableObject {
+    @Published var phase: NotchPhase = .hidden
+    @Published var notchWidth: CGFloat = 0
+    @Published var notchHeight: CGFloat = 32
+}
+
+struct NotchView: View {
+    @ObservedObject var model: NotchModel
+    @State private var pulse = false
+
+    var body: some View {
+        let phase = model.phase
+        let wing = phase.wing
+        let height = model.notchHeight
+        let hidden = phase == .hidden
+        UnevenRoundedRectangle(bottomLeadingRadius: height * 0.42, bottomTrailingRadius: height * 0.42)
+            .fill(.black)
+            .frame(width: max(model.notchWidth, 40) + wing * 2, height: height)
+            .overlay(alignment: .leading) {
+                leading.frame(width: wing, height: height).opacity(wing > 0 ? 1 : 0)
+            }
+            .overlay(alignment: .trailing) {
+                trailing.frame(width: wing, height: height).opacity(wing > 0 ? 1 : 0)
+            }
+            .shadow(color: phase.tint.opacity(phase == .idle ? 0 : (phase.busy ? (pulse ? 0.9 : 0.25) : 0.7)),
+                    radius: phase.busy ? (pulse ? 10 : 4) : 8)
+            .opacity(hidden ? 0 : 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .animation(.spring(response: 0.45, dampingFraction: 0.72), value: phase)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
+            }
+    }
+
+    @ViewBuilder private var leading: some View {
+        HStack {
+            switch model.phase {
+            case .idle:
+                Circle().fill(.green).frame(width: 7, height: 7).shadow(color: .green, radius: 3)
+            case .connected:
+                Image(systemName: "lock.shield.fill").foregroundStyle(.green)
+            case .connecting, .reconnecting:
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+                    .rotationEffect(.degrees(pulse ? 360 : 0))
+                    .animation(.linear(duration: 1.2).repeatForever(autoreverses: false), value: pulse)
+            case .lost:
+                Image(systemName: "xmark.shield.fill").foregroundStyle(.red)
+            case .hidden:
+                EmptyView()
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .padding(.leading, model.phase == .idle ? 10 : 14)
+    }
+
+    @ViewBuilder private var trailing: some View {
+        HStack {
+            Spacer(minLength: 0)
+            switch model.phase {
+            case .idle:
+                Image(systemName: "lock.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(.green)
+            case .connected:
+                Text("Conectado").foregroundStyle(.green)
+            case .connecting(let text):
+                Text(text).foregroundStyle(.orange)
+            case .reconnecting:
+                Text("Reconectando…").foregroundStyle(.orange)
+            case .lost(let text):
+                Text(text).foregroundStyle(.red)
+            case .hidden:
+                EmptyView()
+            }
+        }
+        .font(.system(size: 12, weight: .semibold))
+        .lineLimit(1)
+        .padding(.trailing, model.phase == .idle ? 10 : 14)
+    }
+}
+
+/// Ventana transparente sobre el notch (o arriba al centro en pantallas sin notch) que muestra la isla.
+/// No recibe clics ni aparece en Mission Control.
+@MainActor final class NotchOverlay {
+    private let vpn: VPNController
+    private let model = NotchModel()
+    private var panel: NSPanel?
+    private var lastState: VPNState?
+    private var flashWork: DispatchWorkItem?
+    private var observers: [Any] = []
+    private var cancellable: Any?
+    private static let maxWing: CGFloat = 140, padding: CGFloat = 24
+
+    init(vpn: VPNController) {
+        self.vpn = vpn
+        cancellable = vpn.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.update() } }
+        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.layout() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        })
+        update()
+    }
+
+    private var enabled: Bool { UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true }
+    private var showIdle: Bool { UserDefaults.standard.object(forKey: "notchIdle") as? Bool ?? true }
+
+    /// La pantalla con notch (si hay) o la principal.
+    private var screen: NSScreen? {
+        NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.level = .statusBar + 1
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        panel.contentView = NSHostingView(rootView: NotchView(model: model))
+        return panel
+    }
+
+    private func layout() {
+        guard let panel, let screen else { return }
+        let frame = screen.frame
+        if screen.safeAreaInsets.top > 0,
+           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            model.notchWidth = frame.width - left.width - right.width
+            model.notchHeight = screen.safeAreaInsets.top
+        } else {
+            model.notchWidth = 0
+            model.notchHeight = NSStatusBar.system.thickness
+        }
+        let width = max(model.notchWidth, 40) + Self.maxWing * 2 + Self.padding * 2
+        let height = model.notchHeight + Self.padding
+        panel.setFrame(NSRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height), display: true)
+    }
+
+    private func flash(_ phase: NotchPhase, then next: NotchPhase) {
+        flashWork?.cancel()
+        model.phase = phase
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.flashWork = nil
+                self?.model.phase = next
+            }
+        }
+        flashWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    func update() {
+        // QA: OPENFORTIBAR_QA_NOTCH=1 recorre los estados de la isla (para capturas), sin mirar la VPN.
+        if ProcessInfo.processInfo.environment["OPENFORTIBAR_QA_NOTCH"] == "1" {
+            guard panel == nil else { return }
+            panel = makePanel(); layout(); panel?.orderFrontRegardless()
+            let phases: [NotchPhase] = [.connected, .idle, .reconnecting, .connecting("Conectando…"), .lost("Conexión perdida"), .hidden]
+            for (i, phase) in phases.enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(i) * 3) { [weak self] in self?.model.phase = phase }
+            }
+            return
+        }
+        guard enabled else {
+            flashWork?.cancel(); flashWork = nil
+            model.phase = .hidden
+            panel?.orderOut(nil)
+            lastState = vpn.displayState
+            return
+        }
+        if panel == nil { panel = makePanel(); layout() }
+        panel?.orderFrontRegardless()
+
+        let state = vpn.displayState
+        let idle: NotchPhase = showIdle ? .idle : .hidden
+        switch state {
+        case .connecting, .waitingLogin:
+            flashWork?.cancel(); flashWork = nil
+            model.phase = vpn.isReconnecting ? .reconnecting
+                : .connecting(state == .waitingLogin ? "Inicia sesión…" : "Conectando…")
+        case .connected:
+            if lastState != .connected { flash(.connected, then: idle) }
+            else if flashWork == nil { model.phase = idle }
+        case .disconnected:
+            if lastState == .connected || lastState == .disconnecting {
+                flash(.lost(lastState == .disconnecting ? "Desconectado" : "Conexión perdida"), then: .hidden)
+            } else if flashWork == nil {
+                model.phase = .hidden
+            }
+        case .disconnecting:
+            break
+        case .external:
+            if flashWork == nil { model.phase = .hidden }
+        }
+        lastState = state
+    }
+}
+
+// MARK: - App
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     static weak var shared: AppDelegate?
@@ -1796,6 +2039,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private var observers: [Any] = []
     private var cancellable: Any?
+    private var notch: NotchOverlay?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
@@ -1814,6 +2058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
 
         refreshIcon()
+        notch = NotchOverlay(vpn: vpn)
         cancellable = vpn.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshIcon() }
         }
