@@ -1,5 +1,10 @@
 # Cambios
 
+## [1.6.2] - 2026-11-24
+
+### Cambiado
+- **Configuración separada en pestañas**: **General** (inicio, logs y actualizaciones), **Conexión** (perfil y navegador para el login), **Personalización** (ícono de la app e ícono por conexión) y **Backup**. La app recuerda la última pestaña abierta.
+
 ## [1.6.1] - 2026-11-24
 
 ### Agregado

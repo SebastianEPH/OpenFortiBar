@@ -749,6 +749,27 @@ final class UIState: ObservableObject {
     @Published var backupError = false
 }
 
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, connection, appearance, backup
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .connection: "Conexión"
+        case .appearance: "Personalización"
+        case .backup: "Backup"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .connection: "network"
+        case .appearance: "paintbrush"
+        case .backup: "externaldrive"
+        }
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject var vpn: VPNController
     @AppStorage("icon") private var icon = AppIcon.shield.rawValue
@@ -759,6 +780,7 @@ struct SettingsView: View {
     @AppStorage("browser") private var browser = Browser.system.rawValue
     @AppStorage("browserProfile") private var browserProfile = ""
     @AppStorage("browserAskIfClosed") private var browserAskIfClosed = false
+    @AppStorage("settingsTab") private var tab = SettingsTab.general.rawValue
     @ObservedObject var ui: UIState
     @ObservedObject var updater: Updater
 
@@ -846,101 +868,135 @@ struct SettingsView: View {
                 Text("Configuración").font(.headline)
                 Spacer()
             }
+            tabBar
             Divider()
-
-            Text("Ícono de la app").font(.subheadline.bold())
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                ForEach(AppIcon.allCases) { option in
-                    Button { select(option) } label: {
-                        VStack(spacing: 4) {
-                            Group {
-                                if let image = option.image {
-                                    Image(nsImage: image).resizable().scaledToFit()
-                                        .foregroundStyle(.primary)
-                                } else {
-                                    Image(systemName: "plus.square.dashed").resizable().scaledToFit()
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(width: 30, height: 30)
-                            Text(option.title).font(.caption2).lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(6)
-                        .background(icon == option.rawValue ? Color.accentColor.opacity(0.2) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8)
-                            .stroke(icon == option.rawValue ? Color.accentColor : .secondary.opacity(0.3)))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            HStack {
-                Button("Elegir imagen…") { pickCustom() }
-                if let customError = ui.customError { Text(customError).font(.caption).foregroundStyle(.red) }
-            }
-            .controlSize(.small)
-            Toggle("Atenuar el ícono cuando está desconectado", isOn: $dim)
-
-            if !vpn.profiles.isEmpty {
-                Divider()
-                Text("Ícono por conexión").font(.subheadline.bold())
-                Text("Al seleccionar una conexión en el panel, la barra muestra su ícono.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                    ForEach(vpn.profiles) { profile in
-                        GridRow {
-                            Text(profile.name).lineLimit(1)
-                            Picker("", selection: profileBinding(profile.id)) {
-                                Text("Igual que la app").tag("")
-                                Divider()
-                                ForEach(AppIcon.allCases.filter { $0 != .custom || $0.image != nil }) {
-                                    Text($0.title).tag($0.rawValue)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: 170)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-            Text("General").font(.subheadline.bold())
-            Toggle("Abrir al iniciar sesión", isOn: $vpn.launchAtLogin)
-            Toggle("Mostrar logs en el panel", isOn: $showLogs)
-
-            Divider()
-            Text("Navegador para el login").font(.subheadline.bold())
-            browserSection
-
-            Divider()
-            Text("Actualizaciones").font(.subheadline.bold())
-            updateRow
-            Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
-
-            Divider()
-            Text("Conexión").font(.subheadline.bold())
-            connectionEditor
-
-            Divider()
-            Text("Backup").font(.subheadline.bold())
-            HStack {
-                Button("Crear backup") { createBackup(choose: false) }
-                Button("Guardar en…") { createBackup(choose: true) }
-                Button("Restaurar…") { restoreBackup() }
-                Button { NSWorkspace.shared.open(ConfigDir.root) } label: { Image(systemName: "folder") }
-                    .help("Abrir ~/.openforti")
-            }
-            .controlSize(.small)
-            if let message = ui.backupMessage {
-                Text(message).font(.caption).foregroundStyle(ui.backupError ? .red : .green)
-                    .textSelection(.enabled)
-            } else {
-                Text(backupSummary).font(.caption).foregroundStyle(.secondary)
+            switch SettingsTab(rawValue: tab) ?? .general {
+            case .general: generalTab
+            case .connection: connectionTab
+            case .appearance: appearanceTab
+            case .backup: backupTab
             }
         }
         .toggleStyle(.checkbox)
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(SettingsTab.allCases) { item in
+                let active = tab == item.rawValue
+                Button { tab = item.rawValue } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.symbol).font(.system(size: 16)).frame(height: 18)
+                        Text(item.title).font(.caption2).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(active ? Color.accentColor : .secondary)
+                    .background(active ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder private var generalTab: some View {
+        Text("Inicio").font(.subheadline.bold())
+        Toggle("Abrir al iniciar sesión", isOn: $vpn.launchAtLogin)
+        Toggle("Mostrar logs en el panel", isOn: $showLogs)
+
+        Divider()
+        Text("Actualizaciones").font(.subheadline.bold())
+        updateRow
+        Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
+    }
+
+    @ViewBuilder private var connectionTab: some View {
+        Text("Perfil de conexión").font(.subheadline.bold())
+        connectionEditor
+
+        Divider()
+        Text("Navegador para el login").font(.subheadline.bold())
+        browserSection
+    }
+
+    @ViewBuilder private var appearanceTab: some View {
+        Text("Ícono de la app").font(.subheadline.bold())
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+            ForEach(AppIcon.allCases) { option in
+                Button { select(option) } label: {
+                    VStack(spacing: 4) {
+                        Group {
+                            if let image = option.image {
+                                Image(nsImage: image).resizable().scaledToFit()
+                                    .foregroundStyle(.primary)
+                            } else {
+                                Image(systemName: "plus.square.dashed").resizable().scaledToFit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 30, height: 30)
+                        Text(option.title).font(.caption2).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(6)
+                    .background(icon == option.rawValue ? Color.accentColor.opacity(0.2) : .clear,
+                                in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(icon == option.rawValue ? Color.accentColor : .secondary.opacity(0.3)))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        HStack {
+            Button("Elegir imagen…") { pickCustom() }
+            if let customError = ui.customError { Text(customError).font(.caption).foregroundStyle(.red) }
+        }
+        .controlSize(.small)
+        Toggle("Atenuar el ícono cuando está desconectado", isOn: $dim)
+
+        if !vpn.profiles.isEmpty {
+            Divider()
+            Text("Ícono por conexión").font(.subheadline.bold())
+            Text("Al seleccionar una conexión en el panel, la barra muestra su ícono.")
+                .font(.caption).foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                ForEach(vpn.profiles) { profile in
+                    GridRow {
+                        Text(profile.name).lineLimit(1)
+                        Picker("", selection: profileBinding(profile.id)) {
+                            Text("Igual que la app").tag("")
+                            Divider()
+                            ForEach(AppIcon.allCases.filter { $0 != .custom || $0.image != nil }) {
+                                Text($0.title).tag($0.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 170)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var backupTab: some View {
+        Text("Backup").font(.subheadline.bold())
+        Text("Incluye perfiles, certificados, íconos y preferencias en un .zip.")
+            .font(.caption).foregroundStyle(.secondary)
+        HStack {
+            Button("Crear backup") { createBackup(choose: false) }
+            Button("Guardar en…") { createBackup(choose: true) }
+            Button("Restaurar…") { restoreBackup() }
+            Button { NSWorkspace.shared.open(ConfigDir.root) } label: { Image(systemName: "folder") }
+                .help("Abrir ~/.openforti")
+        }
+        .controlSize(.small)
+        if let message = ui.backupMessage {
+            Text(message).font(.caption).foregroundStyle(ui.backupError ? .red : .green)
+                .textSelection(.enabled)
+        } else {
+            Text(backupSummary).font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var browserSection: some View {
