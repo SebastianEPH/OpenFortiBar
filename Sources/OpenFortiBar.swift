@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Darwin
+import IOKit.pwr_mgt
 import LocalAuthentication
 import SwiftUI
 
@@ -137,7 +138,7 @@ enum ConfigDir {
 @MainActor
 enum Backup {
     /// Preferencias de la app que se guardan en el backup.
-    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile", "browser", "browserProfile", "browserAskIfClosed"]
+    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile", "browser", "browserProfile", "browserAskIfClosed", "autoReconnect", "preventSleep"]
 
     private static func ditto(_ args: [String]) -> Bool {
         let p = Process()
@@ -422,8 +423,15 @@ final class VPNController: ObservableObject {
     @Published private(set) var address: String?
     @Published private(set) var connectedSince: Date?
     @Published private(set) var lastError: String?
+    /// Intento de reconexión automática en curso (0 = ninguno) y cuándo se lanza el siguiente.
+    @Published private(set) var reconnectAttempt = 0
+    @Published private(set) var reconnectAt: Date?
+    static let reconnectDelays: [TimeInterval] = [3, 10, 20, 30, 60]
 
     var logURL: URL { Helper.logURL }
+    private var reconnectWork: DispatchWorkItem?
+    private var sleepAssertion: IOPMAssertionID = 0
+    private var wakeObserver: Any?
 
     private var starting = false
     private var stopping = false
@@ -445,6 +453,15 @@ final class VPNController: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        // Al despertar, una reconexión pendiente se lanza en unos segundos (lo que tarda en volver la red).
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.poll()
+                if self.reconnectWork != nil { self.scheduleReconnectWork(after: 5) }
+            }
+        }
     }
 
     var selected: Profile? { profiles.first { $0.id == selectedID } ?? profiles.first }
@@ -456,8 +473,9 @@ final class VPNController: ObservableObject {
         }
     }
 
-    func connect() {
+    func connect(auto: Bool = false) {
         guard let profile = selected, state == .disconnected else { return }
+        if !auto { cancelReconnect() }
         guard Helper.isInstalled else {
             lastError = "Primero instala el helper (ver aviso arriba)."
             return
@@ -476,6 +494,7 @@ final class VPNController: ObservableObject {
 
     /// Cierra el túnel, incluido uno abierto fuera de la app (p. ej. `openforti-cli` en Terminal).
     func disconnect() {
+        cancelReconnect()
         lastError = nil
         stopping = true
         state = .disconnecting
@@ -511,6 +530,7 @@ final class VPNController: ObservableObject {
             startRequestedAt = nil
             if log.contains("Tunnel is up and running") {
                 if connectedSince == nil { connectedSince = Date() }
+                reconnectAttempt = 0
                 (interface, address) = Self.pppAddress() ?? (nil, nil)
                 state = stopping ? .disconnecting : .connected
             } else {
@@ -529,6 +549,8 @@ final class VPNController: ObservableObject {
                 let lastErrorLine = log.split(separator: "\n").last { $0.hasPrefix("ERROR:") }
                 lastError = lastErrorLine.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }
                     ?? (state == .connected ? "Se perdió la conexión." : "No se pudo conectar.")
+                // Reconecta si se cortó estando conectada (p. ej. tras suspender) o si falló un intento automático.
+                if state == .connected || reconnectAttempt > 0 { scheduleReconnect() }
             }
             stopping = false
             startRequestedAt = nil
@@ -538,6 +560,57 @@ final class VPNController: ObservableObject {
             state = Self.pgrep("-x", "openfortivpn") ? .external : .disconnected
         }
         StatusItemTooltip.set("OpenForti Bar — \(state.title)")
+        updateSleepAssertion()
+    }
+
+    // MARK: Reconexión automática y suspensión
+
+    private func scheduleReconnect() {
+        guard UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true else { return }
+        guard reconnectAttempt < Self.reconnectDelays.count else {
+            lastError = "No se pudo reconectar después de \(reconnectAttempt) intentos."
+            reconnectAttempt = 0
+            return
+        }
+        reconnectAttempt += 1
+        scheduleReconnectWork(after: Self.reconnectDelays[reconnectAttempt - 1])
+    }
+
+    private func scheduleReconnectWork(after delay: TimeInterval) {
+        reconnectWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.reconnectNow() } }
+        reconnectWork = work
+        reconnectAt = Date().addingTimeInterval(delay)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func reconnectNow() {
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        reconnectAt = nil
+        guard state == .disconnected else { return }
+        connect(auto: true)
+    }
+
+    func cancelReconnect() {
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        reconnectAt = nil
+        reconnectAttempt = 0
+    }
+
+    /// Mientras está conectada (y si la opción está activa) impide que la Mac se suspenda por inactividad.
+    /// Cerrar la tapa o suspender a mano sigue suspendiendo.
+    private func updateSleepAssertion() {
+        let want = state == .connected && UserDefaults.standard.bool(forKey: "preventSleep")
+        if want && sleepAssertion == 0 {
+            IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                        IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                        "OpenForti Bar: VPN conectada" as CFString, &sleepAssertion)
+        } else if !want && sleepAssertion != 0 {
+            IOPMAssertionRelease(sleepAssertion)
+            sleepAssertion = 0
+        }
     }
 
     private static func authenticateURL(in log: String) -> URL? {
@@ -781,6 +854,8 @@ struct SettingsView: View {
     @AppStorage("browserProfile") private var browserProfile = ""
     @AppStorage("browserAskIfClosed") private var browserAskIfClosed = false
     @AppStorage("settingsTab") private var tab = SettingsTab.general.rawValue
+    @AppStorage("autoReconnect") private var autoReconnect = true
+    @AppStorage("preventSleep") private var preventSleep = false
     @ObservedObject var ui: UIState
     @ObservedObject var updater: Updater
 
@@ -918,6 +993,14 @@ struct SettingsView: View {
         Divider()
         Text("Navegador para el login").font(.subheadline.bold())
         browserSection
+
+        Divider()
+        Text("Suspensión y cortes").font(.subheadline.bold())
+        Toggle("Reconectar automáticamente si la conexión se corta", isOn: $autoReconnect)
+        Toggle("Evitar que la Mac se suspenda sola mientras está conectada", isOn: $preventSleep)
+        Text("La VPN no puede seguir abierta mientras la Mac está suspendida (tampoco al cerrar la tapa). Al despertar se reconecta sola; si tu sesión de Microsoft sigue abierta en el navegador, normalmente el login se completa sin pedirte nada.")
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private var appearanceTab: some View {
@@ -1482,6 +1565,22 @@ struct PanelView: View {
         if let error = vpn.lastError {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.red)
+        }
+        if let at = vpn.reconnectAt {
+            HStack {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Label("Reconectando en \(max(0, Int(at.timeIntervalSince(context.date).rounded(.up)))) s (intento \(vpn.reconnectAttempt) de \(VPNController.reconnectDelays.count))",
+                          systemImage: "arrow.clockwise")
+                        .font(.caption)
+                }
+                Spacer()
+                Button("Ahora") { vpn.reconnectNow() }
+                Button("Cancelar") { vpn.cancelReconnect() }
+            }
+            .controlSize(.small)
+        } else if vpn.reconnectAttempt > 0, [.connecting, .waitingLogin].contains(vpn.state) {
+            Label("Reconectando (intento \(vpn.reconnectAttempt) de \(VPNController.reconnectDelays.count))…", systemImage: "arrow.clockwise")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

@@ -1,5 +1,11 @@
 # Cambios
 
+## [1.7.0] - 2026-11-24
+
+### Agregado
+- **Reconexión automática** si la VPN se corta estando conectada (por ejemplo, al suspender la Mac o por un corte de red): hasta 5 intentos (a los 3, 10, 20, 30 y 60 s). Al despertar, el intento pendiente se lanza a los 5 s. El panel muestra la cuenta regresiva con **Ahora** y **Cancelar**. Se puede desactivar en ⚙︎ → Conexión → «Suspensión y cortes».
+- Opción **«Evitar que la Mac se suspenda sola mientras está conectada»** (desactivada por defecto). Cerrar la tapa o suspender a mano sigue suspendiendo.
+
 ## [1.6.2] - 2026-11-24
 
 ### Cambiado
