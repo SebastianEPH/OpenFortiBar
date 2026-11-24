@@ -19,7 +19,7 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
 - No pide contraseña de administrador cada vez: un helper root mínimo y protegido, con una regla `sudo` limitada
 - Configuración (⚙︎ / ⌘,): ocho íconos para elegir (Escudo, UTP, Candado, Red, Llave, Túnel, Mundo) o una imagen tuya, y un ícono distinto para cada conexión; logs, actualizaciones y más
 - Botón **Actualizar** que instala el último release de GitHub
-- Opción para abrirse al iniciar sesión. La VPN nunca se conecta sola
+- Opción para abrirse al iniciar sesión. La VPN nunca se conecta sola al abrir la app; si se corta (por ejemplo, al suspender la Mac), se reconecta automáticamente (desactivable)
 - CLI opcional: `openforti-cli [perfil]`
 
 ## Instalación
