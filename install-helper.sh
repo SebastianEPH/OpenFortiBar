@@ -5,7 +5,7 @@
 #
 # Copia a /Library/PrivilegedHelperTools/openfortibar (root:wheel):
 #   vpn-helper, bin/openfortivpn + lib/ (OpenSSL), profiles/ (desde ~/.openforti/profiles; si no existe, ~/.config/openfortivpn)
-# y crea /etc/sudoers.d/openfortibar permitiendo solo "vpn-helper start <perfil>" y "vpn-helper stop".
+# y crea /etc/sudoers.d/openfortibar permitiendo solo "vpn-helper start <perfil>", stop, suspend, resume e import.
 set -e
 [[ $EUID == 0 ]] || { print -u2 "Ejecuta con sudo."; exit 1 }
 USER_NAME=${1:-$SUDO_USER}
@@ -45,11 +45,11 @@ for conf in $BASE/profiles/*.conf(N); do
   sed -i '' -E "s|^(ca-file *= *).*/([^/]+)$|\\1$BASE/profiles/\\2|" $conf
 done
 
-# Regla sudo: solo conectar, desconectar e importar perfiles
+# Regla sudo: solo conectar, desconectar, pausar/reanudar al suspender e importar perfiles
 SUDOERS=$(mktemp)
 cat > $SUDOERS <<EOF
-# OpenForti Bar: conectar, desconectar e importar perfiles sin contraseña (solo el helper protegido)
-$USER_NAME ALL=(root) NOPASSWD: $BASE/vpn-helper start *, $BASE/vpn-helper stop, $BASE/vpn-helper import
+# OpenForti Bar: conectar, desconectar, pausar/reanudar e importar perfiles sin contraseña (solo el helper protegido)
+$USER_NAME ALL=(root) NOPASSWD: $BASE/vpn-helper start *, $BASE/vpn-helper stop, $BASE/vpn-helper suspend, $BASE/vpn-helper resume, $BASE/vpn-helper import
 EOF
 visudo -cf $SUDOERS >/dev/null
 install -o root -g wheel -m 440 $SUDOERS /etc/sudoers.d/openfortibar

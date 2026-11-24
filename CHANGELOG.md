@@ -1,5 +1,15 @@
 # Cambios
 
+## [1.8.0] - 2026-11-24
+
+### Agregado
+- **Reconexión tras suspender sin volver a iniciar sesión.** Antes de que la Mac se suspenda, el túnel se pausa **sin cerrar la sesión en el servidor**. Al despertar se reconecta con esa misma sesión (cookie `SVPNCOOKIE`), sin abrir el navegador. La cookie solo la puede leer root (`/Library/PrivilegedHelperTools/openfortibar/run/session`, 600), nunca aparece en el log y se borra al desconectar a mano o cuando el servidor la invalida.
+- Si el servidor ya cerró la sesión (por ejemplo, tras una suspensión larga), se inicia sesión de nuevo en el navegador.
+- **Ícono «cargando»**: mientras conecta o reconecta, el punto naranja del ícono parpadea y el panel dice «Reconectando…». El botón pasa a **Cancelar**.
+
+### Nota
+- Pulsa **Actualizar componente** en el panel (pide la contraseña de administrador una sola vez): el helper tiene las órdenes nuevas `suspend` y `resume`.
+
 ## [1.7.0] - 2026-11-24
 
 ### Agregado

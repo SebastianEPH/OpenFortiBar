@@ -59,6 +59,18 @@ enum Helper {
         return !FileManager.default.contentsEqual(atPath: bundled.path, andPath: executable.path)
     }
 
+    /// Igual que `run`, pero espera a que termine (para usarlo antes de que la Mac se suspenda).
+    static func runSync(_ args: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["-n", executable.path] + args
+        process.standardError = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
     /// Ejecuta `sudo -n vpn-helper <args>`; devuelve el mensaje de error, o nil si salió bien.
     static func run(_ args: [String], completion: @escaping @MainActor (String?) -> Void) {
         let process = Process()
@@ -372,8 +384,8 @@ enum MenuBarIcon {
 
     static func clearCache() { cache.removeAll() }
 
-    static func image(for state: VPNState, icon: AppIcon, dim: Bool) -> NSImage {
-        let key = "\(state)-\(icon.rawValue)-\(dim)"
+    static func image(for state: VPNState, icon: AppIcon, dim: Bool, dotFaded: Bool = false) -> NSImage {
+        let key = "\(state)-\(icon.rawValue)-\(dim)-\(dotFaded)"
         if let cached = cache[key] { return cached }
         let logo = icon.image
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
@@ -395,7 +407,7 @@ enum MenuBarIcon {
                 let rect = NSRect(x: 10, y: 10, width: 7, height: 7)
                 NSColor.white.setFill()
                 NSBezierPath(ovalIn: rect).fill()
-                dot.setFill()
+                (dotFaded ? dot.withAlphaComponent(0.25) : dot).setFill()
                 NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
             }
             return true
@@ -403,6 +415,42 @@ enum MenuBarIcon {
         image.isTemplate = false
         cache[key] = image
         return image
+    }
+}
+
+// MARK: - Aviso de suspensión (IOKit)
+
+/// Avisa antes de que la Mac se suspenda y espera a que `willSleep` termine antes de permitirlo
+/// (NSWorkspace.willSleepNotification no espera). Las constantes son iokit_common_msg(0x270/0x280).
+final class SleepWatcher {
+    private static let canSleep: natural_t = 0xE000_0270
+    private static let willSleepMessage: natural_t = 0xE000_0280
+    private var rootPort: io_connect_t = 0
+    private var notifier: io_object_t = 0
+    private var port: IONotificationPortRef?
+    private let willSleep: () -> Void
+
+    init(willSleep: @escaping () -> Void) {
+        self.willSleep = willSleep
+        rootPort = IORegisterForSystemPower(Unmanaged.passUnretained(self).toOpaque(), &port, { refcon, _, type, argument in
+            guard let refcon else { return }
+            Unmanaged<SleepWatcher>.fromOpaque(refcon).takeUnretainedValue().handle(type, argument)
+        }, &notifier)
+        if let port {
+            CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .commonModes)
+        }
+    }
+
+    private func handle(_ type: natural_t, _ argument: UnsafeMutableRawPointer?) {
+        switch type {
+        case Self.canSleep:
+            IOAllowPowerChange(rootPort, Int(bitPattern: argument))
+        case Self.willSleepMessage:
+            willSleep()
+            IOAllowPowerChange(rootPort, Int(bitPattern: argument))
+        default:
+            break
+        }
     }
 }
 
@@ -432,6 +480,9 @@ final class VPNController: ObservableObject {
     private var reconnectWork: DispatchWorkItem?
     private var sleepAssertion: IOPMAssertionID = 0
     private var wakeObserver: Any?
+    private var sleepWatcher: SleepWatcher?
+    /// El túnel se pausó antes de suspender y se reanudará con la misma sesión al despertar.
+    @Published private(set) var pausedForSleep = false
 
     private var starting = false
     private var stopping = false
@@ -453,13 +504,22 @@ final class VPNController: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
-        // Al despertar, una reconexión pendiente se lanza en unos segundos (lo que tarda en volver la red).
+        // Antes de suspender: pausa el túnel sin cerrar la sesión. Al despertar: lo reanuda con esa sesión
+        // a los pocos segundos (lo que tarda en volver la red).
+        sleepWatcher = SleepWatcher { [weak self] in
+            MainActor.assumeIsolated { self?.prepareForSleep() }
+        }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.poll()
-                if self.reconnectWork != nil { self.scheduleReconnectWork(after: 5) }
+                if self.pausedForSleep && self.state == .disconnected {
+                    self.reconnectAttempt = max(self.reconnectAttempt, 1)
+                    self.scheduleReconnectWork(after: 3)
+                } else if self.reconnectWork != nil {
+                    self.scheduleReconnectWork(after: 5)
+                }
             }
         }
     }
@@ -531,6 +591,7 @@ final class VPNController: ObservableObject {
             if log.contains("Tunnel is up and running") {
                 if connectedSince == nil { connectedSince = Date() }
                 reconnectAttempt = 0
+                pausedForSleep = false
                 (interface, address) = Self.pppAddress() ?? (nil, nil)
                 state = stopping ? .disconnecting : .connected
             } else {
@@ -545,12 +606,15 @@ final class VPNController: ObservableObject {
         } else if let started = startRequestedAt, Date().timeIntervalSince(started) < 5 {
             state = .connecting
         } else {
-            if wasActive && !stopping {
+            if wasActive && !stopping && pausedForSleep && reconnectAttempt == 0 {
+                // Túnel pausado a propósito antes de suspender: sin error; se reanuda al despertar.
+            } else if wasActive && !stopping {
                 let lastErrorLine = log.split(separator: "\n").last { $0.hasPrefix("ERROR:") }
                 lastError = lastErrorLine.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }
                     ?? (state == .connected ? "Se perdió la conexión." : "No se pudo conectar.")
-                // Reconecta si se cortó estando conectada (p. ej. tras suspender) o si falló un intento automático.
+                // Reconecta si se cortó estando conectada o si falló un intento automático.
                 if state == .connected || reconnectAttempt > 0 { scheduleReconnect() }
+                if pausedForSleep && reconnectWork != nil { lastError = nil }
             }
             stopping = false
             startRequestedAt = nil
@@ -559,7 +623,7 @@ final class VPNController: ObservableObject {
             address = nil
             state = Self.pgrep("-x", "openfortivpn") ? .external : .disconnected
         }
-        StatusItemTooltip.set("OpenForti Bar — \(state.title)")
+        StatusItemTooltip.set("OpenForti Bar — \(statusTitle)")
         updateSleepAssertion()
     }
 
@@ -589,7 +653,7 @@ final class VPNController: ObservableObject {
         reconnectWork = nil
         reconnectAt = nil
         guard state == .disconnected else { return }
-        connect(auto: true)
+        if pausedForSleep { resumeSession() } else { connect(auto: true) }
     }
 
     func cancelReconnect() {
@@ -597,7 +661,54 @@ final class VPNController: ObservableObject {
         reconnectWork = nil
         reconnectAt = nil
         reconnectAttempt = 0
+        pausedForSleep = false
     }
+
+    /// Llamado antes de suspender (la Mac espera a que termine): corta el túnel sin hacer logout
+    /// para poder reanudarlo al despertar con la misma sesión.
+    private func prepareForSleep() {
+        guard state == .connected, UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true else { return }
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        reconnectAt = nil
+        reconnectAttempt = 0
+        pausedForSleep = true
+        if !Helper.runSync(["suspend"]) { pausedForSleep = false } // helper antiguo o sin sesión: comportamiento normal
+    }
+
+    /// Reanuda el túnel con la sesión guardada (sin login). Si el servidor ya no la acepta, inicia sesión de nuevo.
+    private func resumeSession() {
+        lastError = nil
+        loginURL = nil
+        starting = true
+        state = .connecting
+        Helper.run(["resume"]) { [weak self] error in
+            guard let self else { return }
+            self.starting = false
+            if error != nil {
+                // No hay sesión guardada (el servidor la cerró o la rechazó): login normal.
+                self.pausedForSleep = false
+                self.state = .disconnected
+                self.connect(auto: true)
+                self.lastError = "La sesión expiró en el servidor; inicia sesión de nuevo en el navegador."
+            } else {
+                self.startRequestedAt = Date()
+            }
+            self.poll()
+        }
+    }
+
+    /// Estado para el ícono y los textos: mientras espera para reconectar se muestra como «conectando».
+    var displayState: VPNState {
+        state == .disconnected && (reconnectAt != nil || pausedForSleep) ? .connecting : state
+    }
+
+    var isReconnecting: Bool {
+        (pausedForSleep || reconnectAttempt > 0) && [.disconnected, .connecting, .waitingLogin].contains(state)
+            && displayState != .disconnected
+    }
+
+    var statusTitle: String { isReconnecting && displayState == .connecting ? "Reconectando…" : displayState.title }
 
     /// Mientras está conectada (y si la opción está activa) impide que la Mac se suspenda por inactividad.
     /// Cerrar la tapa o suspender a mano sigue suspendiendo.
@@ -1477,10 +1588,10 @@ struct PanelView: View {
             Image(nsImage: AppIcon.resolve(app: icon, profileIcons: profileIcons, profile: vpn.selected?.id).image ?? NSImage())
                 .resizable()
                 .frame(width: 30, height: 30)
-                .opacity(vpn.state == .disconnected ? 0.5 : 1)
+                .opacity(vpn.displayState == .disconnected ? 0.5 : 1)
             VStack(alignment: .leading, spacing: 2) {
                 Text("OpenForti Bar").font(.headline)
-                Text(vpn.state.title).font(.subheadline).foregroundStyle(vpn.state.color)
+                Text(vpn.statusTitle).font(.subheadline).foregroundStyle(vpn.displayState.color)
             }
             Spacer()
             if vpn.profiles.isEmpty {
@@ -1585,7 +1696,7 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var actionButton: some View {
-        switch vpn.state {
+        switch vpn.displayState {
         case .disconnected:
             Button { vpn.connect() } label: {
                 Label("Conectar", systemImage: "power").frame(maxWidth: .infinity)
@@ -1745,13 +1856,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    private var blinkTimer: Timer?
+    private var blinkPhase = false
+
     func refreshIcon() {
         let defaults = UserDefaults.standard
         let icon = AppIcon.resolve(app: defaults.string(forKey: "icon") ?? AppIcon.shield.rawValue,
                                    profileIcons: defaults.string(forKey: "profileIcons") ?? "{}",
                                    profile: vpn.selected?.id)
         let dim = defaults.object(forKey: "dimWhenDisconnected") as? Bool ?? true
-        let image = MenuBarIcon.image(for: vpn.state, icon: icon, dim: dim)
+        // Mientras conecta o reconecta, el punto naranja parpadea («cargando»).
+        let busy = [.connecting, .waitingLogin, .disconnecting].contains(vpn.displayState)
+        if busy && blinkTimer == nil {
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.blinkPhase.toggle(); self?.refreshIcon() }
+            }
+        } else if !busy, let timer = blinkTimer {
+            timer.invalidate(); blinkTimer = nil; blinkPhase = false
+        }
+        let image = MenuBarIcon.image(for: vpn.displayState, icon: icon, dim: dim, dotFaded: busy && blinkPhase)
         if statusItem?.button?.image !== image { statusItem?.button?.image = image }
     }
 
