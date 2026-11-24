@@ -137,7 +137,7 @@ enum ConfigDir {
 @MainActor
 enum Backup {
     /// Preferencias de la app que se guardan en el backup.
-    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile"]
+    static let keys = ["icon", "profileIcons", "dimWhenDisconnected", "showLogs", "logsExpanded", "autoCheckUpdates", "profile", "browser", "browserProfile", "browserAskIfClosed"]
 
     private static func ditto(_ args: [String]) -> Bool {
         let p = Process()
@@ -499,7 +499,7 @@ final class VPNController: ObservableObject {
     }
 
     func reopenLogin() {
-        if let loginURL { NSWorkspace.shared.open(loginURL) }
+        if let loginURL { Browser.open(loginURL) }
     }
 
     func poll() {
@@ -516,7 +516,7 @@ final class VPNController: ObservableObject {
             } else {
                 if loginURL == nil, let url = Self.authenticateURL(in: log) {
                     loginURL = url
-                    NSWorkspace.shared.open(url)
+                    Browser.openLogin(url)
                 }
                 state = stopping ? .disconnecting : (loginURL != nil ? .waitingLogin : .connecting)
             }
@@ -756,6 +756,9 @@ struct SettingsView: View {
     @AppStorage("showLogs") private var showLogs = true
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
     @AppStorage("profileIcons") private var profileIcons = "{}"
+    @AppStorage("browser") private var browser = Browser.system.rawValue
+    @AppStorage("browserProfile") private var browserProfile = ""
+    @AppStorage("browserAskIfClosed") private var browserAskIfClosed = false
     @ObservedObject var ui: UIState
     @ObservedObject var updater: Updater
 
@@ -908,6 +911,10 @@ struct SettingsView: View {
             Toggle("Mostrar logs en el panel", isOn: $showLogs)
 
             Divider()
+            Text("Navegador para el login").font(.subheadline.bold())
+            browserSection
+
+            Divider()
             Text("Actualizaciones").font(.subheadline.bold())
             updateRow
             Toggle("Buscar actualizaciones al abrir el panel", isOn: $autoCheckUpdates)
@@ -934,6 +941,51 @@ struct SettingsView: View {
             }
         }
         .toggleStyle(.checkbox)
+    }
+
+    @ViewBuilder private var browserSection: some View {
+        let current = Browser(rawValue: browser) ?? .system
+        let options = Browser.installed
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+            GridRow {
+                Text("Navegador").foregroundStyle(.secondary)
+                Picker("", selection: Binding(get: { browser }, set: { browser = $0; browserProfile = "" })) {
+                    ForEach(options) { Text($0.displayName).tag($0.rawValue) }
+                    if !options.contains(current) { Text("\(current.title) (no instalado)").tag(current.rawValue) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 240, alignment: .leading)
+            }
+            if current.supportsProfiles {
+                let profiles = current.profiles
+                GridRow {
+                    Text("Perfil").foregroundStyle(.secondary)
+                    Picker("", selection: $browserProfile) {
+                        Text("El último que usaste").tag("")
+                        if !profiles.isEmpty { Divider() }
+                        ForEach(profiles) { Text($0.name).tag($0.id) }
+                        if !browserProfile.isEmpty && !profiles.contains(where: { $0.id == browserProfile }) {
+                            Text("\(browserProfile) (no encontrado)").tag(browserProfile)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 240, alignment: .leading)
+                }
+            }
+        }
+        if current != .system {
+            Toggle("Si \(current.title) no está abierto, preguntar antes de abrirlo", isOn: $browserAskIfClosed)
+            if !current.supportsProfiles {
+                Text("\(current.title) no permite elegir el perfil desde otra app; se usa el que tenga abierto.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        HStack {
+            Button("Probar") { Browser.open(URL(string: "https://example.com")!) }
+                .help("Abre una página de prueba con el navegador y perfil elegidos")
+            Text("Aquí se abrirá la página de inicio de sesión (SSO/SAML).").font(.caption).foregroundStyle(.secondary)
+        }
+        .controlSize(.small)
     }
 
     @ViewBuilder private var connectionEditor: some View {
@@ -1064,6 +1116,148 @@ struct SettingsView: View {
             MenuBarIcon.clearCache()
         } catch {
             ui.customError = "No se pudo guardar la imagen"
+        }
+    }
+}
+
+// MARK: - Navegador para el login SAML
+
+/// Navegadores soportados. Los basados en Chromium permiten elegir el perfil (`--profile-directory`).
+enum Browser: String, CaseIterable, Identifiable {
+    case system = "", safari, chrome, edge, brave, chromium, vivaldi, arc, firefox
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "Predeterminado del sistema"
+        case .safari: "Safari"
+        case .chrome: "Google Chrome"
+        case .edge: "Microsoft Edge"
+        case .brave: "Brave"
+        case .chromium: "Chromium"
+        case .vivaldi: "Vivaldi"
+        case .arc: "Arc"
+        case .firefox: "Firefox"
+        }
+    }
+
+    var bundleID: String? {
+        switch self {
+        case .system: nil
+        case .safari: "com.apple.Safari"
+        case .chrome: "com.google.Chrome"
+        case .edge: "com.microsoft.edgemac"
+        case .brave: "com.brave.Browser"
+        case .chromium: "org.chromium.Chromium"
+        case .vivaldi: "com.vivaldi.Vivaldi"
+        case .arc: "company.thebrowser.Browser"
+        case .firefox: "org.mozilla.firefox"
+        }
+    }
+
+    /// Carpeta de datos (donde está "Local State") de los navegadores Chromium que aceptan --profile-directory.
+    private var chromiumDataDir: URL? {
+        let base = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        switch self {
+        case .chrome: return base.appendingPathComponent("Google/Chrome")
+        case .edge: return base.appendingPathComponent("Microsoft Edge")
+        case .brave: return base.appendingPathComponent("BraveSoftware/Brave-Browser")
+        case .chromium: return base.appendingPathComponent("Chromium")
+        case .vivaldi: return base.appendingPathComponent("Vivaldi")
+        default: return nil
+        }
+    }
+
+    var supportsProfiles: Bool { chromiumDataDir != nil }
+
+    var appURL: URL? {
+        guard let bundleID else { return nil }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
+    var isInstalled: Bool { self == .system || appURL != nil }
+
+    var isRunning: Bool {
+        guard let bundleID else { return true }
+        return !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+    }
+
+    /// Nombre a mostrar: para "Predeterminado" incluye cuál es (p. ej. "Predeterminado del sistema (Safari)").
+    var displayName: String {
+        guard self == .system else { return title }
+        if let probe = URL(string: "https://example.com"),
+           let app = NSWorkspace.shared.urlForApplication(toOpen: probe) {
+            return "\(title) (\(app.deletingPathExtension().lastPathComponent))"
+        }
+        return title
+    }
+
+    static var installed: [Browser] { allCases.filter(\.isInstalled) }
+
+    static var selected: Browser { Browser(rawValue: UserDefaults.standard.string(forKey: "browser") ?? "") ?? .system }
+
+    struct Profile: Identifiable, Hashable { let id: String; let name: String }
+
+    /// Perfiles leídos de "Local State" (profile.info_cache): id = carpeta ("Default", "Profile 1"), name = nombre visible.
+    var profiles: [Profile] {
+        guard let dir = chromiumDataDir,
+              let data = try? Data(contentsOf: dir.appendingPathComponent("Local State")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let profile = json["profile"] as? [String: Any],
+              let cache = profile["info_cache"] as? [String: [String: Any]]
+        else { return [] }
+        return cache.map { key, info in
+            let name = (info["name"] as? String) ?? key
+            let account = (info["user_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return Profile(id: key, name: account.map { "\(name) — \($0)" } ?? name)
+        }
+        .sorted { a, b in
+            if a.id == "Default" { return true }
+            if b.id == "Default" { return false }
+            return a.id.localizedStandardCompare(b.id) == .orderedAscending
+        }
+    }
+
+    /// Abre `url` con el navegador y perfil configurados. Si el navegador elegido no está instalado, usa el predeterminado.
+    @MainActor static func open(_ url: URL) {
+        let browser = selected
+        guard browser != .system, let app = browser.appURL else {
+            NSWorkspace.shared.open(url); return
+        }
+        let profile = UserDefaults.standard.string(forKey: "browserProfile") ?? ""
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if browser.supportsProfiles, !profile.isEmpty {
+            // Una instancia nueva le pasa los argumentos a la que ya está abierta (o la abre si no lo está).
+            config.createsNewApplicationInstance = true
+            config.arguments = ["--profile-directory=\(profile)", url.absoluteString]
+            NSWorkspace.shared.openApplication(at: app, configuration: config) { _, error in
+                if error != nil { DispatchQueue.main.async { NSWorkspace.shared.open([url], withApplicationAt: app, configuration: .init()) } }
+            }
+        } else {
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
+        }
+    }
+
+    /// Abre la URL de login respetando la opción "si no está abierto": abrirlo directamente o preguntar antes.
+    @MainActor static func openLogin(_ url: URL) {
+        let browser = selected
+        guard browser != .system, browser.appURL != nil, !browser.isRunning,
+              UserDefaults.standard.bool(forKey: "browserAskIfClosed") else { return open(url) }
+        // Se muestra después del ciclo actual para no bloquear el poll que detectó la URL.
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "\(browser.title) no está abierto"
+            alert.informativeText = "OpenForti Bar necesita abrir la página de inicio de sesión de la VPN. ¿Quieres abrir \(browser.title)?"
+            alert.addButton(withTitle: "Abrir \(browser.title)")
+            alert.addButton(withTitle: "Usar el predeterminado")
+            alert.addButton(withTitle: "Cancelar")
+            NSApp.activate(ignoringOtherApps: true)
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: open(url)
+            case .alertSecondButtonReturn: NSWorkspace.shared.open(url)
+            default: break // Se puede reabrir con «Abrir de nuevo» en el panel.
+            }
         }
     }
 }

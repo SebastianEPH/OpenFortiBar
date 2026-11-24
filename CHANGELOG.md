@@ -1,5 +1,13 @@
 # Cambios
 
+## [1.6.1] - 2026-11-24
+
+### Agregado
+- **Elegir el navegador para el login** en ⚙︎ Configuración → «Navegador para el login»: predeterminado del sistema, Safari, Chrome, Edge, Brave, Chromium, Vivaldi, Arc o Firefox (solo los instalados).
+- **Elegir el perfil** en Chrome, Edge, Brave, Vivaldi y Chromium (se leen los perfiles del navegador con su nombre y cuenta). «Abrir de nuevo» también usa el navegador y perfil elegidos.
+- Opción **«preguntar antes de abrirlo»** si el navegador no está abierto, con la alternativa de usar el predeterminado. Botón **Probar** para verificarlo.
+- Estas preferencias se incluyen en los backups.
+
 ## [1.6.0] - 2026-11-23
 
 ### Cambiado

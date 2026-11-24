@@ -12,6 +12,7 @@ Si en tu empresa todos usan FortiClient, OpenForti Bar hace lo mismo sin el peso
 
 - Conectar y desconectar con un clic desde la barra de menús, con un punto de color para el estado
 - Login SAML/SSO: abre automáticamente la página de autenticación en el navegador
+- Elegir el navegador para el login (Safari, Chrome, Edge, Brave, Firefox, Arc…) y, en Chrome/Edge/Brave/Vivaldi, el perfil; opcionalmente pregunta antes de abrirlo si no está abierto
 - Carpeta personal `~/.openforti` (como `~/.ssh` o `~/.aws`) con tus perfiles, certificados e íconos, protegida con permisos 700/600
 - Backup y restauración desde ⚙︎ (perfiles, certificados, íconos y preferencias en un `.zip`)
 - DNS dividido: los dominios internos se resuelven con el DNS de la VPN (`# dns-domains:` en el perfil)
